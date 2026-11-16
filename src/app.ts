@@ -1,5 +1,6 @@
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
+import { notFoundHandler, errorHandler } from './middlewares/index.js';
 
 export const createApp = (): Application => {
   const app = express();
@@ -17,6 +18,12 @@ export const createApp = (): Application => {
       uptimeSeconds: Math.floor(process.uptime()),
     });
   });
+
+  // Catch unmatched routes (404 Not Found)
+  app.use(notFoundHandler);
+
+  // Global centralized error handling middleware
+  app.use(errorHandler);
 
   return app;
 };
