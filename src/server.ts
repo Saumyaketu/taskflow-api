@@ -1,5 +1,6 @@
 import { app } from './app.js';
 import { env } from './config/env.js';
+import { disconnectDatabase } from './config/database.js';
 
 const PORT = env.PORT;
 
@@ -8,10 +9,11 @@ const server = app.listen(PORT, () => {
   console.log(`Health endpoint available at http://localhost:${PORT}/health`);
 });
 
-const shutdown = () => {
+const shutdown = async () => {
   console.log('Shutting down server gracefully...');
-  server.close(() => {
-    console.log('Server shut down cleanly.');
+  server.close(async () => {
+    await disconnectDatabase();
+    console.log('Server and database connections shut down cleanly.');
     process.exit(0);
   });
 };
