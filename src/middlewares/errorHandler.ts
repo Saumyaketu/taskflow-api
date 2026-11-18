@@ -61,7 +61,22 @@ export const errorHandler: ErrorRequestHandler = (
     return;
   }
 
-  // 4. Unexpected / Unhandled Internal Server Errors
+  // 4. Prisma Unique Constraint Violation (P2002)
+  if (err && typeof err === 'object' && err.code === 'P2002') {
+    const target = Array.isArray(err.meta?.target) ? err.meta.target.join(', ') : 'resource';
+    const envelope: ApiErrorEnvelope = {
+      error: {
+        code: 'CONFLICT',
+        message: `A record with this ${target} already exists`,
+        details: [],
+      },
+    };
+
+    res.status(409).json(envelope);
+    return;
+  }
+
+  // 5. Unexpected / Unhandled Internal Server Errors
   if (env.NODE_ENV !== 'test') {
     console.error('Unhandled Server Error:', err);
   }
