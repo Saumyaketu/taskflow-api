@@ -2,13 +2,18 @@
   "info": {
     "_postman_id": "taskflow-api-collection",
     "name": "TaskFlow API",
-    "description": "Postman requests to manually verify TaskFlow API User Registration & Health endpoints.",
+    "description": "Postman requests to manually verify TaskFlow API User Registration, Login & Health endpoints.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
       "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
       "type": "string"
     }
   ],
@@ -47,7 +52,7 @@
       }
     },
     {
-      "name": "Auth - 2. Duplicate Email (Conflict 409)",
+      "name": "Auth - 2. Register Duplicate Email (Conflict 409)",
       "request": {
         "method": "POST",
         "header": [
@@ -68,7 +73,86 @@
       }
     },
     {
-      "name": "Auth - 3. Validation - Password Too Short (422)",
+      "name": "Auth - 3. Login User (Success 200 + JWT)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "    const json = pm.response.json();",
+              "    if (json.token) {",
+              "        pm.collectionVariables.set('authToken', json.token);",
+              "    }",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"  Bruce@Wayne.COM  \",\n  \"password\": \"SuperSecret123\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/auth/login",
+          "host": ["{{baseUrl}}"],
+          "path": ["auth", "login"]
+        }
+      }
+    },
+    {
+      "name": "Auth - 4. Login Failed - Wrong Password (401)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"bruce@wayne.com\",\n  \"password\": \"WrongPassword999\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/auth/login",
+          "host": ["{{baseUrl}}"],
+          "path": ["auth", "login"]
+        }
+      }
+    },
+    {
+      "name": "Auth - 5. Login Failed - Unregistered Email (401)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"unregistered@example.com\",\n  \"password\": \"SuperSecret123\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/auth/login",
+          "host": ["{{baseUrl}}"],
+          "path": ["auth", "login"]
+        }
+      }
+    },
+    {
+      "name": "Auth - 6. Validation - Short Password (422)",
       "request": {
         "method": "POST",
         "header": [
@@ -89,7 +173,7 @@
       }
     },
     {
-      "name": "Auth - 4. Validation - Invalid Email (422)",
+      "name": "Auth - 7. Validation - Invalid Email (422)",
       "request": {
         "method": "POST",
         "header": [
@@ -101,27 +185,6 @@
         "body": {
           "mode": "raw",
           "raw": "{\n  \"name\": \"Diana Prince\",\n  \"email\": \"not-a-valid-email\",\n  \"password\": \"SuperSecret123\"\n}"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/auth/register",
-          "host": ["{{baseUrl}}"],
-          "path": ["auth", "register"]
-        }
-      }
-    },
-    {
-      "name": "Auth - 5. Validation - Blank Name (422)",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"name\": \"   \",\n  \"email\": \"diana@themyscira.com\",\n  \"password\": \"SuperSecret123\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/auth/register",

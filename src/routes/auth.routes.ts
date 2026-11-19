@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { AuthController } from '../controllers/auth.controller.js';
 import { validate } from '../middlewares/validate.js';
-import { registerSchema } from '../schemas/auth.schema.js';
+import { registerSchema, loginSchema } from '../schemas/auth.schema.js';
 
 export const createAuthRouter = (authController: AuthController = new AuthController()): Router => {
   const router = Router();
@@ -12,6 +12,13 @@ export const createAuthRouter = (authController: AuthController = new AuthContro
    * @access Public
    */
   router.post('/register', validate(registerSchema), authController.register);
+
+  /**
+   * @route POST /auth/login
+   * @desc Authenticate user and issue signed JWT token
+   * @access Public
+   */
+  router.post('/login', validate(loginSchema), authController.login);
 
   return router;
 };

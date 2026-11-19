@@ -24,3 +24,19 @@ export const registerSchema = z.object({
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
+
+/**
+ * Validation schema for user authentication/login requests
+ */
+export const loginSchema = z.object({
+  email: z
+    .string('Email is required')
+    .trim()
+    .toLowerCase()
+    .email('Invalid email address format'),
+  password: z
+    .string('Password is required')
+    .min(1, 'Password cannot be empty'),
+});
+
+export type LoginInput = z.infer<typeof loginSchema>;

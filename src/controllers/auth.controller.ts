@@ -17,4 +17,18 @@ export class AuthController {
       user,
     });
   });
+
+  /**
+   * Handles user login (POST /auth/login)
+   * Responds with 200 OK, signed JWT token, and sanitized user profile
+   */
+  login = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const { token, user } = await this.authService.login(req.body);
+
+    res.status(200).json({
+      message: 'Login successful',
+      token,
+      user,
+    });
+  });
 }

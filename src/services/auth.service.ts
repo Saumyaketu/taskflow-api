@@ -1,8 +1,9 @@
 import { User } from '@prisma/client';
 import { UserRepository } from '../repositories/user.repository.js';
-import { RegisterInput } from '../schemas/auth.schema.js';
-import { hashPassword } from '../utils/password.js';
-import { ConflictError } from '../errors/index.js';
+import { RegisterInput, LoginInput } from '../schemas/auth.schema.js';
+import { hashPassword, comparePassword } from '../utils/password.js';
+import { generateToken } from '../utils/jwt.js';
+import { ConflictError, UnauthorizedError } from '../errors/index.js';
 
 export interface SafeUser {
   id: string;
@@ -10,6 +11,11 @@ export interface SafeUser {
   email: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AuthResult {
+  token: string;
+  user: SafeUser;
 }
 
 /**
@@ -52,5 +58,37 @@ export class AuthService {
 
     // 4. Return safe representation without sensitive credentials
     return toSafeUser(newUser);
+  }
+
+  /**
+   * Authenticates a user with email and password, issuing a signed JWT.
+   * Employs generic 401 Unauthorized responses to prevent user enumeration attacks.
+   */
+  async login(input: LoginInput): Promise<AuthResult> {
+    const normalizedEmail = input.email.trim().toLowerCase();
+
+    // 1. Look up user by normalized email
+    const user = await this.userRepository.findByEmail(normalizedEmail);
+    if (!user) {
+      throw new UnauthorizedError('Invalid email or password', 'INVALID_CREDENTIALS');
+    }
+
+    // 2. Verify password against stored bcrypt hash
+    const isPasswordValid = await comparePassword(input.password, user.passwordHash);
+    if (!isPasswordValid) {
+      throw new UnauthorizedError('Invalid email or password', 'INVALID_CREDENTIALS');
+    }
+
+    // 3. Issue signed JWT token containing user identity and expiration claims
+    const token = generateToken({
+      userId: user.id,
+      email: user.email,
+    });
+
+    // 4. Return token and sanitized user profile
+    return {
+      token,
+      user: toSafeUser(user),
+    };
   }
 }

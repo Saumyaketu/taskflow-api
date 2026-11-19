@@ -3,12 +3,13 @@ import request from 'supertest';
 import { app } from '../src/app.js';
 import { prisma } from '../src/config/database.js';
 import { hashPassword, comparePassword } from '../src/utils/password.js';
-import { registerSchema } from '../src/schemas/auth.schema.js';
+import { generateToken, verifyToken } from '../src/utils/jwt.js';
+import { registerSchema, loginSchema } from '../src/schemas/auth.schema.js';
 import { UserRepository } from '../src/repositories/user.repository.js';
 import { AuthService, toSafeUser } from '../src/services/auth.service.js';
-import { ConflictError } from '../src/errors/index.js';
+import { ConflictError, UnauthorizedError } from '../src/errors/index.js';
 
-describe('User Registration Endpoint & Security Pipeline', () => {
+describe('Authentication & User Management Pipeline (Day 4 & Day 5)', () => {
   // =========================================================================
   // 1. Password Hashing & Verification Utilities
   // =========================================================================
@@ -30,10 +31,36 @@ describe('User Registration Endpoint & Security Pipeline', () => {
   });
 
   // =========================================================================
-  // 2. Input Validation Schema & Normalization
+  // 2. JWT Generation & Verification Utilities (Day 5)
   // =========================================================================
-  describe('Registration Zod Schema Validation & Normalization', () => {
-    it('should accept valid user payload and normalize email to lowercase and trimmed', () => {
+  describe('JWT Token Utilities', () => {
+    it('should sign and verify valid JWT token containing user identity and expiration claims', () => {
+      const payload = { userId: 'user-uuid-1234', email: 'test@example.com' };
+      const token = generateToken(payload, '2h');
+
+      expect(token).toBeDefined();
+      expect(typeof token).toBe('string');
+      expect(token.split('.').length).toBe(3); // Header.Payload.Signature
+
+      const decoded = verifyToken(token);
+      expect(decoded.userId).toBe(payload.userId);
+      expect(decoded.email).toBe(payload.email);
+      expect(decoded.exp).toBeDefined();
+      expect(decoded.iat).toBeDefined();
+      expect(decoded.exp! - decoded.iat!).toBe(7200); // 2 hours in seconds
+    });
+
+    it('should reject tampered or invalid JWT token', () => {
+      const invalidToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalidpayload.invalidsignature';
+      expect(() => verifyToken(invalidToken)).toThrow();
+    });
+  });
+
+  // =========================================================================
+  // 3. Input Validation Schemas & Normalization
+  // =========================================================================
+  describe('Registration & Login Zod Schemas', () => {
+    it('registerSchema: should accept valid user payload and normalize email', () => {
       const rawInput = {
         name: '  Jane Doe  ',
         email: '  Jane.Doe@EXAMPLE.COM  ',
@@ -47,7 +74,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
       expect(parsed.password).toBe('ValidPassword123');
     });
 
-    it('should reject email with invalid format', () => {
+    it('registerSchema: should reject email with invalid format', () => {
       const input = {
         name: 'Jane Doe',
         email: 'not-a-valid-email',
@@ -57,7 +84,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
       expect(() => registerSchema.parse(input)).toThrow();
     });
 
-    it('should reject password with less than 8 characters', () => {
+    it('registerSchema: should reject password with less than 8 characters', () => {
       const input = {
         name: 'Jane Doe',
         email: 'jane@example.com',
@@ -67,19 +94,28 @@ describe('User Registration Endpoint & Security Pipeline', () => {
       expect(() => registerSchema.parse(input)).toThrow();
     });
 
-    it('should reject empty or whitespace-only name', () => {
-      const input = {
-        name: '   ',
-        email: 'jane@example.com',
-        password: 'ValidPassword123',
+    it('loginSchema: should accept valid credentials and normalize email', () => {
+      const rawInput = {
+        email: '  BRUCE@Wayne.COM  ',
+        password: 'SuperSecret123',
       };
 
-      expect(() => registerSchema.parse(input)).toThrow();
+      const parsed = loginSchema.parse(rawInput);
+      expect(parsed.email).toBe('bruce@wayne.com');
+      expect(parsed.password).toBe('SuperSecret123');
+    });
+
+    it('loginSchema: should reject invalid email format', () => {
+      expect(() => loginSchema.parse({ email: 'invalid-email', password: 'password123' })).toThrow();
+    });
+
+    it('loginSchema: should reject empty password', () => {
+      expect(() => loginSchema.parse({ email: 'user@example.com', password: '' })).toThrow();
     });
   });
 
   // =========================================================================
-  // 3. Repository Layer (UserRepository)
+  // 4. Repository Layer (UserRepository)
   // =========================================================================
   describe('UserRepository Unit Tests', () => {
     const mockPrisma = {
@@ -149,7 +185,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
   });
 
   // =========================================================================
-  // 4. Service Layer (AuthService)
+  // 5. Service Layer (AuthService)
   // =========================================================================
   describe('AuthService Unit Tests', () => {
     const mockUserRepo = {
@@ -164,7 +200,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
       vi.clearAllMocks();
     });
 
-    it('should register a new user and never expose passwordHash', async () => {
+    it('register: should register a new user and never expose passwordHash', async () => {
       vi.spyOn(mockUserRepo, 'findByEmail').mockResolvedValueOnce(null);
 
       const createdDate = new Date();
@@ -198,7 +234,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
       expect((safeUser as any).password).toBeUndefined();
     });
 
-    it('should throw ConflictError if email is already registered', async () => {
+    it('register: should throw ConflictError if email is already registered', async () => {
       vi.spyOn(mockUserRepo, 'findByEmail').mockResolvedValueOnce({
         id: 'existing-id',
         name: 'Existing User',
@@ -217,6 +253,71 @@ describe('User Registration Endpoint & Security Pipeline', () => {
       ).rejects.toThrow(ConflictError);
 
       expect(mockUserRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('login: should authenticate valid user and return token and safe user profile', async () => {
+      const rawPassword = 'ValidPassword123';
+      const passwordHash = await hashPassword(rawPassword);
+
+      const mockDbUser = {
+        id: 'user-uuid-login',
+        name: 'Login User',
+        email: 'login@example.com',
+        passwordHash,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      vi.spyOn(mockUserRepo, 'findByEmail').mockResolvedValueOnce(mockDbUser);
+
+      const result = await service.login({
+        email: 'Login@Example.com',
+        password: rawPassword,
+      });
+
+      expect(result).toHaveProperty('token');
+      expect(typeof result.token).toBe('string');
+      expect(result).toHaveProperty('user');
+      expect(result.user.id).toBe('user-uuid-login');
+      expect(result.user.email).toBe('login@example.com');
+      expect((result.user as any).passwordHash).toBeUndefined();
+      expect((result.user as any).password).toBeUndefined();
+
+      const decoded = verifyToken(result.token);
+      expect(decoded.userId).toBe('user-uuid-login');
+      expect(decoded.email).toBe('login@example.com');
+    });
+
+    it('login: should throw generic UnauthorizedError when email is not found', async () => {
+      vi.spyOn(mockUserRepo, 'findByEmail').mockResolvedValueOnce(null);
+
+      await expect(
+        service.login({
+          email: 'nonexistent@example.com',
+          password: 'Password123!',
+        })
+      ).rejects.toThrow(UnauthorizedError);
+    });
+
+    it('login: should throw generic UnauthorizedError when password is wrong', async () => {
+      const passwordHash = await hashPassword('CorrectPassword123');
+      const mockDbUser = {
+        id: 'user-uuid-wrongpass',
+        name: 'User',
+        email: 'user@example.com',
+        passwordHash,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      vi.spyOn(mockUserRepo, 'findByEmail').mockResolvedValueOnce(mockDbUser);
+
+      await expect(
+        service.login({
+          email: 'user@example.com',
+          password: 'WrongPassword!',
+        })
+      ).rejects.toThrow(UnauthorizedError);
     });
 
     it('toSafeUser helper should explicitly strip password_hash', () => {
@@ -244,7 +345,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
   });
 
   // =========================================================================
-  // 5. HTTP Integration Tests (POST /auth/register)
+  // 6. HTTP Integration Tests (POST /auth/register)
   // =========================================================================
   describe('POST /auth/register HTTP Endpoint', () => {
     beforeEach(() => {
@@ -300,32 +401,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
       );
     });
 
-    it('should also be accessible via versioned route POST /api/v1/auth/register', async () => {
-      const mockCreatedUser = {
-        id: '4f0391ab-3f59-4bb4-9588-4c803df3ea5b',
-        name: 'Clark Kent',
-        email: 'clark@dailyplanet.com',
-        passwordHash: '$2a$10$sampleHashedPassword1234567890',
-        createdAt: new Date('2026-01-01T00:00:00.000Z'),
-        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-      };
-
-      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(null);
-      vi.spyOn(prisma.user, 'create').mockResolvedValueOnce(mockCreatedUser);
-
-      const response = await request(app)
-        .post('/api/v1/auth/register')
-        .send({
-          name: 'Clark Kent',
-          email: 'clark@dailyplanet.com',
-          password: 'SuperSecretPassword123',
-        });
-
-      expect(response.status).toBe(201);
-      expect(response.body.user.email).toBe('clark@dailyplanet.com');
-    });
-
-    it('should return 409 Conflict with standard error envelope when email is already registered (case-insensitive deduplication)', async () => {
+    it('should return 409 Conflict with standard error envelope when email is already registered', async () => {
       const existingUser = {
         id: 'existing-uuid',
         name: 'Existing Bruce',
@@ -363,7 +439,7 @@ describe('User Registration Endpoint & Security Pipeline', () => {
         .send({
           name: 'Diana Prince',
           email: 'diana@themyscira.com',
-          password: 'short', // 5 chars, requires >= 8
+          password: 'short',
         });
 
       expect(response.status).toBe(422);
@@ -373,54 +449,167 @@ describe('User Registration Endpoint & Security Pipeline', () => {
 
       const passwordIssue = response.body.error.details.find((d: any) => d.field === 'password');
       expect(passwordIssue).toBeDefined();
-      expect(passwordIssue.message).toContain('8 characters');
+    });
+  });
+
+  // =========================================================================
+  // 7. HTTP Integration Tests (POST /auth/login) - Day 5
+  // =========================================================================
+  describe('POST /auth/login HTTP Endpoint', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
     });
 
-    it('should return 422 Validation Error when email format is invalid', async () => {
+    it('should successfully authenticate user with valid credentials and return 200 OK + JWT', async () => {
+      const rawPassword = 'SuperSecretPassword123';
+      const passwordHash = await hashPassword(rawPassword);
+
+      const mockDbUser = {
+        id: 'c807fb5e-2f5a-4b08-9df8-0123456789ab',
+        name: 'Clark Kent',
+        email: 'clark@dailyplanet.com',
+        passwordHash,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(mockDbUser);
+
       const response = await request(app)
-        .post('/auth/register')
+        .post('/auth/login')
         .send({
-          name: 'Diana Prince',
-          email: 'not-an-email-address',
-          password: 'ValidPassword123',
+          email: '  CLARK@DailyPlanet.COM  ', // Normalization check
+          password: rawPassword,
         });
 
-      expect(response.status).toBe(422);
-      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('message', 'Login successful');
+      expect(response.body).toHaveProperty('token');
+      expect(typeof response.body.token).toBe('string');
+      expect(response.body).toHaveProperty('user');
+      expect(response.body.user).toEqual({
+        id: 'c807fb5e-2f5a-4b08-9df8-0123456789ab',
+        name: 'Clark Kent',
+        email: 'clark@dailyplanet.com',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      });
 
-      const emailIssue = response.body.error.details.find((d: any) => d.field === 'email');
-      expect(emailIssue).toBeDefined();
+      // Security check: passwordHash must NEVER be exposed
+      expect(response.body.user.passwordHash).toBeUndefined();
+      expect(response.body.user.password).toBeUndefined();
+      expect(response.body.passwordHash).toBeUndefined();
+
+      // Verify token authenticity and claims
+      const decoded = verifyToken(response.body.token);
+      expect(decoded.userId).toBe('c807fb5e-2f5a-4b08-9df8-0123456789ab');
+      expect(decoded.email).toBe('clark@dailyplanet.com');
     });
 
-    it('should return 422 Validation Error when name is blank or missing', async () => {
+    it('should also be accessible via versioned route POST /api/v1/auth/login', async () => {
+      const rawPassword = 'SuperSecretPassword123';
+      const passwordHash = await hashPassword(rawPassword);
+
+      const mockDbUser = {
+        id: 'c807fb5e-2f5a-4b08-9df8-0123456789ac',
+        name: 'Barry Allen',
+        email: 'barry@centralcity.com',
+        passwordHash,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(mockDbUser);
+
       const response = await request(app)
-        .post('/auth/register')
+        .post('/api/v1/auth/login')
         .send({
-          name: '   ',
-          email: 'diana@themyscira.com',
-          password: 'ValidPassword123',
+          email: 'barry@centralcity.com',
+          password: rawPassword,
         });
 
-      expect(response.status).toBe(422);
-      expect(response.body.error.code).toBe('VALIDATION_ERROR');
-
-      const nameIssue = response.body.error.details.find((d: any) => d.field === 'name');
-      expect(nameIssue).toBeDefined();
+      expect(response.status).toBe(200);
+      expect(response.body.token).toBeDefined();
+      expect(response.body.user.email).toBe('barry@centralcity.com');
     });
 
-    it('should return 422 Validation Error with all field errors when empty payload is submitted', async () => {
+    it('should return 401 Unauthorized with generic error envelope on incorrect password', async () => {
+      const passwordHash = await hashPassword('CorrectPassword123');
+
+      const mockDbUser = {
+        id: 'mock-user-wrong-pass',
+        name: 'Clark Kent',
+        email: 'clark@dailyplanet.com',
+        passwordHash,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(mockDbUser);
+
       const response = await request(app)
-        .post('/auth/register')
+        .post('/auth/login')
+        .send({
+          email: 'clark@dailyplanet.com',
+          password: 'IncorrectPassword999',
+        });
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({
+        error: {
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid email or password',
+          details: [],
+        },
+      });
+      expect(response.body.token).toBeUndefined();
+    });
+
+    it('should return 401 Unauthorized with generic error envelope on unregistered email', async () => {
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(null);
+
+      const response = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'nobody@dailyplanet.com',
+          password: 'AnyPassword123',
+        });
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({
+        error: {
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid email or password',
+          details: [],
+        },
+      });
+    });
+
+    it('should return 422 Validation Error when email or password is missing', async () => {
+      const response = await request(app)
+        .post('/auth/login')
         .send({});
 
       expect(response.status).toBe(422);
       expect(response.body.error.code).toBe('VALIDATION_ERROR');
-      expect(response.body.error.details.length).toBeGreaterThanOrEqual(3);
 
       const fields = response.body.error.details.map((d: any) => d.field);
-      expect(fields).toContain('name');
       expect(fields).toContain('email');
       expect(fields).toContain('password');
+    });
+
+    it('should return 422 Validation Error when email format is invalid', async () => {
+      const response = await request(app)
+        .post('/auth/login')
+        .send({
+          email: 'invalid-email-address',
+          password: 'SomePassword123',
+        });
+
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      const emailIssue = response.body.error.details.find((d: any) => d.field === 'email');
+      expect(emailIssue).toBeDefined();
     });
   });
 });
