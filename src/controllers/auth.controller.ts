@@ -31,4 +31,15 @@ export class AuthController {
       user,
     });
   });
+
+  /**
+   * Handles retrieving current authenticated user (GET /auth/me)
+   * Responds with 200 OK and sanitized user profile from request context
+   */
+  me = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    res.status(200).json({
+      message: 'Current user profile retrieved successfully',
+      user: req.user,
+    });
+  });
 }

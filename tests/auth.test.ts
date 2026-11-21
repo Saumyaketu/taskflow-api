@@ -8,8 +8,9 @@ import { registerSchema, loginSchema } from '../src/schemas/auth.schema.js';
 import { UserRepository } from '../src/repositories/user.repository.js';
 import { AuthService, toSafeUser } from '../src/services/auth.service.js';
 import { ConflictError, UnauthorizedError } from '../src/errors/index.js';
+import { createAuthMiddleware, authenticate, authGuard } from '../src/middlewares/auth.middleware.js';
 
-describe('Authentication & User Management Pipeline (Day 4 & Day 5)', () => {
+describe('Authentication & User Management Pipeline (Day 4, Day 5 & Day 6)', () => {
   // =========================================================================
   // 1. Password Hashing & Verification Utilities
   // =========================================================================
@@ -612,4 +613,412 @@ describe('Authentication & User Management Pipeline (Day 4 & Day 5)', () => {
       expect(emailIssue).toBeDefined();
     });
   });
+
+  // =========================================================================
+  // 8. Authentication Guard Middleware Unit Tests (Day 6)
+  // =========================================================================
+  describe('Authentication Guard Middleware (authenticate / authGuard)', () => {
+    const mockUserRepo = {
+      findById: vi.fn(),
+    } as unknown as UserRepository;
+
+    const authMiddleware = createAuthMiddleware(mockUserRepo);
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should inject req.user, req.currentUser and call next() on valid token and existing user', async () => {
+      const mockDbUser = {
+        id: 'user-guard-123',
+        name: 'Guard User',
+        email: 'guard@example.com',
+        passwordHash: '$2a$10$hashed',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+
+      vi.spyOn(mockUserRepo, 'findById').mockResolvedValueOnce(mockDbUser);
+
+      const validToken = generateToken({ userId: 'user-guard-123', email: 'guard@example.com' });
+
+      const req: any = {
+        headers: {
+          authorization: `Bearer ${validToken}`,
+        },
+        get: vi.fn().mockReturnValue(`Bearer ${validToken}`),
+      };
+      const res: any = {};
+      const next = vi.fn();
+
+      await authMiddleware(req, res, next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(req.user).toBeDefined();
+      expect(req.user.id).toBe('user-guard-123');
+      expect(req.user.email).toBe('guard@example.com');
+      expect(req.user.passwordHash).toBeUndefined();
+      expect(req.currentUser).toEqual(req.user);
+      expect(req.current_user).toEqual(req.user);
+    });
+
+    it('should call next with UnauthorizedError (UNAUTHORIZED) when Authorization header is missing', async () => {
+      const req: any = {
+        headers: {},
+        get: vi.fn().mockReturnValue(undefined),
+      };
+      const res: any = {};
+      const next = vi.fn();
+
+      await authMiddleware(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      const error = next.mock.calls[0][0];
+      expect(error).toBeInstanceOf(UnauthorizedError);
+      expect(error.statusCode).toBe(401);
+      expect(error.code).toBe('UNAUTHORIZED');
+      expect(error.message).toBe('Authentication token is required');
+    });
+
+    it('should call next with UnauthorizedError when scheme is not Bearer', async () => {
+      const req: any = {
+        headers: { authorization: 'Basic dXNlcjpwYXNz' },
+        get: vi.fn().mockReturnValue('Basic dXNlcjpwYXNz'),
+      };
+      const res: any = {};
+      const next = vi.fn();
+
+      await authMiddleware(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      const error = next.mock.calls[0][0];
+      expect(error).toBeInstanceOf(UnauthorizedError);
+      expect(error.statusCode).toBe(401);
+      expect(error.code).toBe('UNAUTHORIZED');
+      expect(error.message).toContain('Bearer');
+    });
+
+    it('should call next with UnauthorizedError when header has Bearer but missing token', async () => {
+      const req: any = {
+        headers: { authorization: 'Bearer   ' },
+        get: vi.fn().mockReturnValue('Bearer   '),
+      };
+      const res: any = {};
+      const next = vi.fn();
+
+      await authMiddleware(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      const error = next.mock.calls[0][0];
+      expect(error).toBeInstanceOf(UnauthorizedError);
+      expect(error.statusCode).toBe(401);
+      expect(error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should call next with UnauthorizedError (TOKEN_EXPIRED) when token is expired', async () => {
+      const expiredToken = generateToken({ userId: 'u1', email: 'u1@example.com' }, -10);
+
+      const req: any = {
+        headers: { authorization: `Bearer ${expiredToken}` },
+        get: vi.fn().mockReturnValue(`Bearer ${expiredToken}`),
+      };
+      const res: any = {};
+      const next = vi.fn();
+
+      await authMiddleware(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      const error = next.mock.calls[0][0];
+      expect(error).toBeInstanceOf(UnauthorizedError);
+      expect(error.statusCode).toBe(401);
+      expect(error.code).toBe('TOKEN_EXPIRED');
+      expect(error.message).toBe('Authentication token has expired');
+    });
+
+    it('should call next with UnauthorizedError (INVALID_TOKEN) when token signature is invalid', async () => {
+      const tamperedToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1MSJ9.invalidSignature';
+
+      const req: any = {
+        headers: { authorization: `Bearer ${tamperedToken}` },
+        get: vi.fn().mockReturnValue(`Bearer ${tamperedToken}`),
+      };
+      const res: any = {};
+      const next = vi.fn();
+
+      await authMiddleware(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      const error = next.mock.calls[0][0];
+      expect(error).toBeInstanceOf(UnauthorizedError);
+      expect(error.statusCode).toBe(401);
+      expect(error.code).toBe('INVALID_TOKEN');
+      expect(error.message).toBe('Invalid or malformed authentication token');
+    });
+
+    it('should call next with UnauthorizedError (USER_NOT_FOUND) when token is valid but user does not exist', async () => {
+      vi.spyOn(mockUserRepo, 'findById').mockResolvedValueOnce(null);
+
+      const validToken = generateToken({ userId: 'non-existent-user-id', email: 'ghost@example.com' });
+
+      const req: any = {
+        headers: { authorization: `Bearer ${validToken}` },
+        get: vi.fn().mockReturnValue(`Bearer ${validToken}`),
+      };
+      const res: any = {};
+      const next = vi.fn();
+
+      await authMiddleware(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      const error = next.mock.calls[0][0];
+      expect(error).toBeInstanceOf(UnauthorizedError);
+      expect(error.statusCode).toBe(401);
+      expect(error.code).toBe('USER_NOT_FOUND');
+      expect(error.message).toBe('User belonging to this token no longer exists');
+    });
+
+    it('authGuard should be exported as an alias of authenticate', () => {
+      expect(authGuard).toBe(authenticate);
+    });
+  });
+
+  // =========================================================================
+  // 9. HTTP Integration Tests (GET /auth/me & Protected Guard) - Day 6
+  // =========================================================================
+  describe('GET /auth/me Protected HTTP Endpoint', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('should successfully return 200 OK and authenticated user profile with valid Bearer token', async () => {
+      const mockUser = {
+        id: 'me-user-1234',
+        name: 'Hal Jordan',
+        email: 'hal@greenlantern.org',
+        passwordHash: '$2a$10$superSecretHash',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+
+      vi.spyOn(prisma.user, 'findUnique').mockResolvedValueOnce(mockUser);
+
+      const token = generateToken({ userId: mockUser.id, email: mockUser.email });
+
+      const response = await request(app)
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('message', 'Current user profile retrieved successfully');
+      expect(response.body).toHaveProperty('user');
+      expect(response.body.user).toEqual({
+        id: 'me-user-1234',
+        name: 'Hal Jordan',
+        email: 'hal@greenlantern.org',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      });
+      // Crucial: passwordHash is not returned
+      expect(response.body.user.passwordHash).toBeUndefined();
+      expect(response.body.user.password).toBeUndefined();
+    });
+
+    it('should also be accessible via versioned route GET /api/v1/auth/me', async () => {
+      const mockUser = {
+        id: 'me-user-versioned',
+        name: 'Arthur Curry',
+        email: 'arthur@atlantis.org',
+        passwordHash: '$2a$10$hash',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+
+      vi.spyOn(prisma.user, 'findUnique').mockResolvedValueOnce(mockUser);
+
+      const token = generateToken({ userId: mockUser.id, email: mockUser.email });
+
+      const response = await request(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.user.email).toBe('arthur@atlantis.org');
+    });
+
+    it('should return 401 Unauthorized when Authorization header is missing', async () => {
+      const response = await request(app).get('/auth/me');
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Authentication token is required',
+          details: [],
+        },
+      });
+    });
+
+    it('should return 401 Unauthorized when Authorization header is malformed', async () => {
+      const response = await request(app)
+        .get('/auth/me')
+        .set('Authorization', 'InvalidHeaderValueWithoutBearer');
+
+      expect(response.status).toBe(401);
+      expect(response.body.error.code).toBe('UNAUTHORIZED');
+      expect(response.body.error.message).toContain('Bearer');
+    });
+
+    it('should return 401 Unauthorized with TOKEN_EXPIRED code when token is expired', async () => {
+      const expiredToken = generateToken({ userId: 'u-exp', email: 'exp@example.com' }, -10);
+
+      const response = await request(app)
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${expiredToken}`);
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({
+        error: {
+          code: 'TOKEN_EXPIRED',
+          message: 'Authentication token has expired',
+          details: [],
+        },
+      });
+    });
+
+    it('should return 401 Unauthorized with INVALID_TOKEN code when token is invalid or tampered', async () => {
+      const response = await request(app)
+        .get('/auth/me')
+        .set('Authorization', 'Bearer invalid.tampered.jwttoken');
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid or malformed authentication token',
+          details: [],
+        },
+      });
+    });
+
+    it('should return 401 Unauthorized with USER_NOT_FOUND when user was deleted from database', async () => {
+      vi.spyOn(prisma.user, 'findUnique').mockResolvedValueOnce(null);
+
+      const token = generateToken({ userId: 'deleted-user-uuid', email: 'deleted@example.com' });
+
+      const response = await request(app)
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User belonging to this token no longer exists',
+          details: [],
+        },
+      });
+    });
+  });
+
+  // =========================================================================
+  // 10. End-to-End Authentication Suite (Registration -> Login -> Guarded Endpoint)
+  // =========================================================================
+  describe('Full Authentication Lifecycle E2E Suite', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('completes the entire authentication lifecycle: register -> duplicate reject -> invalid password reject -> successful login -> guarded access', async () => {
+      const testEmail = 'victor.stone@titans.org';
+      const password = 'CyborgSecretPassword2026!';
+      const passwordHash = await hashPassword(password);
+
+      const dbUser = {
+        id: 'victor-stone-uuid',
+        name: 'Victor Stone',
+        email: testEmail,
+        passwordHash,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+
+      // 1. Successful registration
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(null);
+      vi.spyOn(prisma.user, 'create').mockResolvedValueOnce(dbUser);
+
+      const registerRes = await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Victor Stone',
+          email: '  VICTOR.STONE@titans.org  ',
+          password,
+        });
+
+      expect(registerRes.status).toBe(201);
+      expect(registerRes.body.user.email).toBe(testEmail);
+      expect(registerRes.body.user.passwordHash).toBeUndefined();
+
+      // 2. Duplicate email rejection (case-insensitive deduplication)
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(dbUser);
+
+      const dupRes = await request(app)
+        .post('/auth/register')
+        .send({
+          name: 'Victor Stone',
+          email: 'Victor.Stone@TITANS.org',
+          password: 'AnotherPassword123',
+        });
+
+      expect(dupRes.status).toBe(409);
+      expect(dupRes.body.error.code).toBe('EMAIL_ALREADY_EXISTS');
+
+      // 3. Invalid password rejection
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(dbUser);
+
+      const badLoginRes = await request(app)
+        .post('/auth/login')
+        .send({
+          email: testEmail,
+          password: 'IncorrectPassword!',
+        });
+
+      expect(badLoginRes.status).toBe(401);
+      expect(badLoginRes.body.error.code).toBe('INVALID_CREDENTIALS');
+
+      // 4. Successful login
+      vi.spyOn(prisma.user, 'findFirst').mockResolvedValueOnce(dbUser);
+
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({
+          email: '  victor.stone@titans.org  ',
+          password,
+        });
+
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.token).toBeDefined();
+      const jwtToken = loginRes.body.token;
+
+      // 5. Protected endpoint authentication guard enforcement
+      vi.spyOn(prisma.user, 'findUnique').mockResolvedValueOnce(dbUser);
+
+      const guardedRes = await request(app)
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${jwtToken}`);
+
+      expect(guardedRes.status).toBe(200);
+      expect(guardedRes.body.user.id).toBe(dbUser.id);
+      expect(guardedRes.body.user.email).toBe(testEmail);
+
+      // 6. Accessing guarded endpoint with missing or invalid token
+      const noTokenRes = await request(app).get('/auth/me');
+      expect(noTokenRes.status).toBe(401);
+
+      const tamperedRes = await request(app)
+        .get('/auth/me')
+        .set('Authorization', 'Bearer forged.invalid.token');
+      expect(tamperedRes.status).toBe(401);
+    });
+  });
 });
+

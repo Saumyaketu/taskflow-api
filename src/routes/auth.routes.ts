@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import { AuthController } from '../controllers/auth.controller.js';
 import { validate } from '../middlewares/validate.js';
+import { authenticate } from '../middlewares/auth.middleware.js';
 import { registerSchema, loginSchema } from '../schemas/auth.schema.js';
 
-export const createAuthRouter = (authController: AuthController = new AuthController()): Router => {
+export const createAuthRouter = (
+  authController: AuthController = new AuthController(),
+  authMiddleware = authenticate
+): Router => {
   const router = Router();
 
   /**
@@ -19,6 +23,13 @@ export const createAuthRouter = (authController: AuthController = new AuthContro
    * @access Public
    */
   router.post('/login', validate(loginSchema), authController.login);
+
+  /**
+   * @route GET /auth/me
+   * @desc Retrieve profile of currently authenticated user
+   * @access Protected (Requires Bearer JWT)
+   */
+  router.get('/me', authMiddleware, authController.me);
 
   return router;
 };
