@@ -15,6 +15,11 @@
       "key": "authToken",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "projectId",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -236,6 +241,122 @@
           "raw": "{{baseUrl}}/auth/me",
           "host": ["{{baseUrl}}"],
           "path": ["auth", "me"]
+        }
+      }
+    },
+    {
+      "name": "Projects - 1. Create Project (Success 201)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "    const json = pm.response.json();",
+              "    if (json.project && json.project.id) {",
+              "        pm.collectionVariables.set('projectId', json.project.id);",
+              "    }",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Backend Engineering Internship\",\n  \"description\": \"Production-minded Team Task Tracker REST API\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/projects",
+          "host": ["{{baseUrl}}"],
+          "path": ["projects"]
+        }
+      }
+    },
+    {
+      "name": "Projects - 2. Create Project - Blank Name (Validation 422)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"   \",\n  \"description\": \"Should fail due to blank name\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/projects",
+          "host": ["{{baseUrl}}"],
+          "path": ["projects"]
+        }
+      }
+    },
+    {
+      "name": "Projects - 3. Create Project - Missing Auth (Unauthorized 401)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Unauthorized Project\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/projects",
+          "host": ["{{baseUrl}}"],
+          "path": ["projects"]
+        }
+      }
+    },
+    {
+      "name": "Projects - 4. List User Projects (Success 200)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/projects",
+          "host": ["{{baseUrl}}"],
+          "path": ["projects"]
+        }
+      }
+    },
+    {
+      "name": "Projects - 5. List Projects - Missing Auth (Unauthorized 401)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/projects",
+          "host": ["{{baseUrl}}"],
+          "path": ["projects"]
         }
       }
     },

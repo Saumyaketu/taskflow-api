@@ -10,7 +10,7 @@ import { AuthService, toSafeUser } from '../src/services/auth.service.js';
 import { ConflictError, UnauthorizedError } from '../src/errors/index.js';
 import { createAuthMiddleware, authenticate, authGuard } from '../src/middlewares/auth.middleware.js';
 
-describe('Authentication & User Management Pipeline (Day 4, Day 5 & Day 6)', () => {
+describe('Authentication & User Management Pipeline', () => {
   // =========================================================================
   // 1. Password Hashing & Verification Utilities
   // =========================================================================
@@ -32,7 +32,7 @@ describe('Authentication & User Management Pipeline (Day 4, Day 5 & Day 6)', () 
   });
 
   // =========================================================================
-  // 2. JWT Generation & Verification Utilities (Day 5)
+  // 2. JWT Generation & Verification Utilities
   // =========================================================================
   describe('JWT Token Utilities', () => {
     it('should sign and verify valid JWT token containing user identity and expiration claims', () => {
@@ -454,7 +454,7 @@ describe('Authentication & User Management Pipeline (Day 4, Day 5 & Day 6)', () 
   });
 
   // =========================================================================
-  // 7. HTTP Integration Tests (POST /auth/login) - Day 5
+  // 7. HTTP Integration Tests (POST /auth/login)
   // =========================================================================
   describe('POST /auth/login HTTP Endpoint', () => {
     beforeEach(() => {
@@ -615,7 +615,7 @@ describe('Authentication & User Management Pipeline (Day 4, Day 5 & Day 6)', () 
   });
 
   // =========================================================================
-  // 8. Authentication Guard Middleware Unit Tests (Day 6)
+  // 8. Authentication Guard Middleware Unit Tests
   // =========================================================================
   describe('Authentication Guard Middleware (authenticate / authGuard)', () => {
     const mockUserRepo = {
@@ -783,7 +783,7 @@ describe('Authentication & User Management Pipeline (Day 4, Day 5 & Day 6)', () 
   });
 
   // =========================================================================
-  // 9. HTTP Integration Tests (GET /auth/me & Protected Guard) - Day 6
+  // 9. HTTP Integration Tests (GET /auth/me & Protected Guard)
   // =========================================================================
   describe('GET /auth/me Protected HTTP Endpoint', () => {
     beforeEach(() => {

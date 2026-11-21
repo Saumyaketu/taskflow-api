@@ -1,7 +1,7 @@
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import { notFoundHandler, errorHandler } from './middlewares/index.js';
-import { authRouter } from './routes/index.js';
+import { authRouter, projectRouter } from './routes/index.js';
 
 export const createApp = (): Application => {
   const app = express();
@@ -23,6 +23,10 @@ export const createApp = (): Application => {
   // Authentication routes
   app.use('/auth', authRouter);
   app.use('/api/v1/auth', authRouter);
+
+  // Project routes
+  app.use('/projects', projectRouter);
+  app.use('/api/v1/projects', projectRouter);
 
   // Catch unmatched routes (404 Not Found)
   app.use(notFoundHandler);
