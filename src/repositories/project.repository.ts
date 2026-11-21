@@ -11,6 +11,26 @@ export type ProjectWithMembers = Project & {
   members: ProjectMember[];
 };
 
+export type ProjectMemberWithUser = {
+  id: string;
+  userId: string;
+  joinedAt: Date;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  };
+};
+
+export type ProjectWithOwnerAndMembers = Project & {
+  owner: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  members: ProjectMemberWithUser[];
+};
+
 export class ProjectRepository {
   constructor(private readonly db: PrismaClient = defaultPrisma) {}
 
@@ -81,28 +101,53 @@ export class ProjectRepository {
   /**
    * Finds a project by its unique ID with owner and members.
    */
-  async findById(projectId: string): Promise<Project | null> {
-    return this.db.project.findUnique({
+  async findById(projectId: string): Promise<ProjectWithOwnerAndMembers | null> {
+    try {
+      return (await this.db.project.findUnique({
+        where: { id: projectId },
+        include: {
+          owner: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+          members: {
+            select: {
+              id: true,
+              userId: true,
+              joinedAt: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+            orderBy: {
+              joinedAt: 'asc',
+            },
+          },
+        },
+      })) as ProjectWithOwnerAndMembers | null;
+    } catch (err: any) {
+      // If UUID syntax is invalid in PostgreSQL driver, treat as not found
+      if (err?.code === 'P2023' || err?.message?.includes('invalid input syntax for type uuid')) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Deletes a project by ID.
+   * Cascading foreign key constraints (onDelete: Cascade) automatically delete associated project members and tasks.
+   */
+  async delete(projectId: string): Promise<Project> {
+    return this.db.project.delete({
       where: { id: projectId },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-        members: {
-          select: {
-            id: true,
-            userId: true,
-            joinedAt: true,
-          },
-          orderBy: {
-            joinedAt: 'asc',
-          },
-        },
-      },
     });
   }
 

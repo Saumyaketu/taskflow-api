@@ -40,4 +40,41 @@ export class ProjectController {
       projects,
     });
   });
+
+  /**
+   * Handles retrieving single project details (GET /projects/:projectId)
+   * Accessible only to project members; non-members get 403 Forbidden
+   */
+  getById = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const user = req.user;
+    if (!user) {
+      throw new UnauthorizedError('Authentication token is required', 'UNAUTHORIZED');
+    }
+
+    const projectId = String(req.params.projectId);
+    const project = await this.projectService.getProjectById(user.id, projectId);
+
+    res.status(200).json({
+      project,
+    });
+  });
+
+  /**
+   * Handles deleting a project (DELETE /projects/:projectId)
+   * Restricted strictly to project owner; non-owners get 403 Forbidden
+   */
+  delete = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const user = req.user;
+    if (!user) {
+      throw new UnauthorizedError('Authentication token is required', 'UNAUTHORIZED');
+    }
+
+    const projectId = String(req.params.projectId);
+    await this.projectService.deleteProject(user.id, projectId);
+
+    res.status(200).json({
+      message: 'Project deleted successfully',
+      projectId,
+    });
+  });
 }

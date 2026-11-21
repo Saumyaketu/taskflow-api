@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { ProjectController } from '../controllers/project.controller.js';
 import { validate } from '../middlewares/validate.js';
 import { authenticate } from '../middlewares/auth.middleware.js';
-import { createProjectSchema } from '../schemas/project.schema.js';
+import { createProjectSchema, projectIdParamSchema } from '../schemas/project.schema.js';
 
 export const createProjectRouter = (
   projectController: ProjectController = new ProjectController(),
@@ -26,6 +26,20 @@ export const createProjectRouter = (
    * @access Protected
    */
   router.get('/', projectController.list);
+
+  /**
+   * @route GET /projects/:projectId
+   * @desc View single project details (members only)
+   * @access Protected (Members only)
+   */
+  router.get('/:projectId', validate({ params: projectIdParamSchema }), projectController.getById);
+
+  /**
+   * @route DELETE /projects/:projectId
+   * @desc Delete project and cascade remove tasks and memberships (owner only)
+   * @access Protected (Owner only)
+   */
+  router.delete('/:projectId', validate({ params: projectIdParamSchema }), projectController.delete);
 
   return router;
 };

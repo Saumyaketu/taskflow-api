@@ -50,3 +50,12 @@ export const createProjectSchema = z
   });
 
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
+
+/**
+ * Validation schema for route parameters containing projectId (e.g., /projects/:projectId)
+ */
+export const projectIdParamSchema = z.object({
+  projectId: z.string('Project ID is required').trim().min(1, 'Project ID cannot be blank'),
+});
+
+export type ProjectIdParam = z.infer<typeof projectIdParamSchema>;
