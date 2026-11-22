@@ -77,4 +77,23 @@ export class ProjectController {
       projectId,
     });
   });
+
+  /**
+   * Handles adding a member to a project (POST /projects/:projectId/members)
+   * Restricted strictly to project owner; lookup target user by email
+   */
+  addMember = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const user = req.user;
+    if (!user) {
+      throw new UnauthorizedError('Authentication token is required', 'UNAUTHORIZED');
+    }
+
+    const projectId = String(req.params.projectId);
+    const member = await this.projectService.addMember(user.id, projectId, req.body);
+
+    res.status(201).json({
+      message: 'Member added successfully',
+      member,
+    });
+  });
 }

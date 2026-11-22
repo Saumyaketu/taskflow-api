@@ -13,6 +13,7 @@ export type ProjectWithMembers = Project & {
 
 export type ProjectMemberWithUser = {
   id: string;
+  projectId: string;
   userId: string;
   joinedAt: Date;
   user?: {
@@ -84,6 +85,7 @@ export class ProjectRepository {
         members: {
           select: {
             id: true,
+            projectId: true,
             userId: true,
             joinedAt: true,
           },
@@ -116,6 +118,7 @@ export class ProjectRepository {
           members: {
             select: {
               id: true,
+              projectId: true,
               userId: true,
               joinedAt: true,
               user: {
@@ -164,5 +167,28 @@ export class ProjectRepository {
       },
     });
     return membership !== null;
+  }
+
+  /**
+   * Adds a user as a member to a project.
+   */
+  async addMember(projectId: string, userId: string): Promise<ProjectMemberWithUser> {
+    const member = await this.db.projectMember.create({
+      data: {
+        projectId,
+        userId,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    return member;
   }
 }

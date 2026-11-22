@@ -59,3 +59,18 @@ export const projectIdParamSchema = z.object({
 });
 
 export type ProjectIdParam = z.infer<typeof projectIdParamSchema>;
+
+/**
+ * Validation schema for adding a member to a project (POST /projects/:projectId/members)
+ * Enforces email validation and normalization (trimmed, lowercased).
+ */
+export const addMemberSchema = z.object({
+  email: z
+    .string('Email is required')
+    .trim()
+    .toLowerCase()
+    .email('Invalid email address format')
+    .max(255, 'Email cannot exceed 255 characters'),
+});
+
+export type AddMemberInput = z.infer<typeof addMemberSchema>;

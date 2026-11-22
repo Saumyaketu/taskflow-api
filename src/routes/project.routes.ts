@@ -2,7 +2,11 @@ import { Router } from 'express';
 import { ProjectController } from '../controllers/project.controller.js';
 import { validate } from '../middlewares/validate.js';
 import { authenticate } from '../middlewares/auth.middleware.js';
-import { createProjectSchema, projectIdParamSchema } from '../schemas/project.schema.js';
+import {
+  createProjectSchema,
+  projectIdParamSchema,
+  addMemberSchema,
+} from '../schemas/project.schema.js';
 
 export const createProjectRouter = (
   projectController: ProjectController = new ProjectController(),
@@ -40,6 +44,17 @@ export const createProjectRouter = (
    * @access Protected (Owner only)
    */
   router.delete('/:projectId', validate({ params: projectIdParamSchema }), projectController.delete);
+
+  /**
+   * @route POST /projects/:projectId/members
+   * @desc Add a registered user as a member to the project by email (owner only)
+   * @access Protected (Owner only)
+   */
+  router.post(
+    '/:projectId/members',
+    validate({ params: projectIdParamSchema, body: addMemberSchema }),
+    projectController.addMember
+  );
 
   return router;
 };
