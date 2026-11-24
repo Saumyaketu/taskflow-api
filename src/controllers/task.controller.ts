@@ -84,6 +84,11 @@ export class TaskController {
       limit: query.limit,
       sortBy: query.sortBy,
       order: query.order,
+      status: query.status,
+      priority: query.priority,
+      assigneeId: query.assigneeId,
+      dueDateFrom: query.dueDateFrom,
+      dueDateTo: query.dueDateTo,
     });
 
     res.status(200).json({

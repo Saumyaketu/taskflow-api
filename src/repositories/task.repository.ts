@@ -42,6 +42,11 @@ export interface FindProjectTasksOptions {
   limit: number;
   sortBy?: 'createdAt' | 'dueDate';
   order?: 'asc' | 'desc';
+  status?: TaskStatus[];
+  priority?: Priority[];
+  assigneeId?: string;
+  dueDateFrom?: Date;
+  dueDateTo?: Date;
 }
 
 export interface PaginatedTasksResult {
@@ -169,19 +174,40 @@ export class TaskRepository {
   }
 
   /**
-   * Retrieves a paginated and sorted list of tasks for a given project.
+   * Retrieves a paginated, sorted, and filtered list of tasks for a given project.
    */
   async findProjectTasks(options: FindProjectTasksOptions): Promise<PaginatedTasksResult> {
     const { projectId, page, limit, sortBy = 'createdAt', order = 'asc' } = options;
     const skip = (page - 1) * limit;
     const take = limit;
 
+    const where: Record<string, any> = { projectId };
+
+    if (options.status && options.status.length > 0) {
+      where.status = { in: options.status };
+    }
+
+    if (options.priority && options.priority.length > 0) {
+      where.priority = { in: options.priority };
+    }
+
+    if (options.assigneeId) {
+      where.assigneeId = options.assigneeId;
+    }
+
+    if (options.dueDateFrom || options.dueDateTo) {
+      where.dueDate = {
+        ...(options.dueDateFrom ? { gte: options.dueDateFrom } : {}),
+        ...(options.dueDateTo ? { lte: options.dueDateTo } : {}),
+      };
+    }
+
     const [total, tasks] = await Promise.all([
       this.db.task.count({
-        where: { projectId },
+        where,
       }),
       this.db.task.findMany({
-        where: { projectId },
+        where,
         skip,
         take,
         orderBy: [

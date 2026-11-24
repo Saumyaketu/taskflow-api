@@ -126,9 +126,26 @@ export const taskIdParamSchema = z.object({
 export type TaskIdParam = z.infer<typeof taskIdParamSchema>;
 
 /**
+ * Helper to normalize string or string array query inputs into trimmed, uppercase string array.
+ */
+const normalizeQueryStringArray = (val: unknown): string[] | undefined => {
+  if (val === undefined || val === null || val === '') return undefined;
+  if (Array.isArray(val)) {
+    const list = val.flatMap((item) => String(item).split(',')).map((s) => s.trim().toUpperCase()).filter(Boolean);
+    return list.length > 0 ? list : undefined;
+  }
+  if (typeof val === 'string') {
+    const list = val.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+    return list.length > 0 ? list : undefined;
+  }
+  return undefined;
+};
+
+/**
  * Validation schema for query parameters when listing project tasks (GET /projects/:projectId/tasks).
- * Supports pagination (page, limit with default 10, max cap 50)
- * and dynamic sorting (sort_by=created_at|due_date, order=asc|desc).
+ * Supports pagination (page, limit with default 10, max cap 50),
+ * dynamic sorting (sort_by=created_at|due_date, order=asc|desc),
+ * and multi-criteria filters (status, priority, assigneeId, due_date_from, due_date_to).
  */
 export const listTasksQuerySchema = z
   .object({
@@ -154,8 +171,33 @@ export const listTasksQuerySchema = z
     sort_by: z.string().trim().optional(),
     sortBy: z.string().trim().optional(),
     order: z.string().trim().optional(),
+    status: z.union([z.string(), z.array(z.string())]).optional(),
+    priority: z.union([z.string(), z.array(z.string())]).optional(),
+    assigneeId: z.string().trim().optional(),
+    assignee_id: z.string().trim().optional(),
+    due_date_from: z
+      .preprocess(
+        (val) => (val === undefined || val === '' || val === null ? undefined : val),
+        iso8601DateSchema.optional()
+      ),
+    dueDateFrom: z
+      .preprocess(
+        (val) => (val === undefined || val === '' || val === null ? undefined : val),
+        iso8601DateSchema.optional()
+      ),
+    due_date_to: z
+      .preprocess(
+        (val) => (val === undefined || val === '' || val === null ? undefined : val),
+        iso8601DateSchema.optional()
+      ),
+    dueDateTo: z
+      .preprocess(
+        (val) => (val === undefined || val === '' || val === null ? undefined : val),
+        iso8601DateSchema.optional()
+      ),
   })
   .superRefine((data, ctx) => {
+    // 1. Sort by validation
     const rawSortBy = data.sort_by ?? data.sortBy;
     if (rawSortBy !== undefined && rawSortBy !== '') {
       const normalized = rawSortBy.toLowerCase();
@@ -167,6 +209,8 @@ export const listTasksQuerySchema = z
         });
       }
     }
+
+    // 2. Sort order validation
     if (data.order !== undefined && data.order !== '') {
       const normalizedOrder = data.order.toLowerCase();
       if (!['asc', 'desc'].includes(normalizedOrder)) {
@@ -174,6 +218,53 @@ export const listTasksQuerySchema = z
           code: z.ZodIssueCode.custom,
           path: ['order'],
           message: "order must be either 'asc' or 'desc'",
+        });
+      }
+    }
+
+    // 3. Status validation
+    const statusArray = normalizeQueryStringArray(data.status);
+    if (statusArray) {
+      const validStatuses = Object.values(TaskStatus);
+      const invalid = statusArray.filter((s) => !validStatuses.includes(s as any));
+      if (invalid.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['status'],
+          message: `status must be one or more of: ${validStatuses.join(', ')}`,
+        });
+      }
+    }
+
+    // 4. Priority validation
+    const priorityArray = normalizeQueryStringArray(data.priority);
+    if (priorityArray) {
+      const validPriorities = Object.values(Priority);
+      const invalid = priorityArray.filter((p) => !validPriorities.includes(p as any));
+      if (invalid.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['priority'],
+          message: `priority must be one or more of: ${validPriorities.join(', ')}`,
+        });
+      }
+    }
+
+    // 5. Due date range validation (due_date_from <= due_date_to)
+    const rawFrom = data.due_date_from ?? data.dueDateFrom;
+    const rawTo = data.due_date_to ?? data.dueDateTo;
+    if (rawFrom && rawTo) {
+      const fromDate = new Date(rawFrom);
+      const toDate = new Date(
+        typeof rawTo === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawTo)
+          ? `${rawTo}T23:59:59.999Z`
+          : rawTo
+      );
+      if (!isNaN(fromDate.getTime()) && !isNaN(toDate.getTime()) && fromDate > toDate) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['due_date_from'],
+          message: 'due_date_from cannot be after due_date_to',
         });
       }
     }
@@ -188,11 +279,37 @@ export const listTasksQuerySchema = z
     const rawOrder = data.order?.toLowerCase();
     const order: 'asc' | 'desc' = rawOrder === 'desc' ? 'desc' : 'asc';
 
+    const statusArray = normalizeQueryStringArray(data.status);
+    const statuses = statusArray ? (statusArray as TaskStatus[]) : undefined;
+
+    const priorityArray = normalizeQueryStringArray(data.priority);
+    const priorities = priorityArray ? (priorityArray as Priority[]) : undefined;
+
+    const rawAssignee = (data.assigneeId ?? data.assignee_id)?.trim();
+    const assigneeId = rawAssignee && rawAssignee.length > 0 ? rawAssignee : undefined;
+
+    const rawFrom = data.due_date_from ?? data.dueDateFrom;
+    const dueDateFrom = rawFrom ? new Date(rawFrom) : undefined;
+
+    const rawTo = data.due_date_to ?? data.dueDateTo;
+    const dueDateTo = rawTo
+      ? new Date(
+          typeof rawTo === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawTo)
+            ? `${rawTo}T23:59:59.999Z`
+            : rawTo
+        )
+      : undefined;
+
     return {
       page: data.page,
       limit: data.limit,
       sortBy,
       order,
+      status: statuses,
+      priority: priorities,
+      assigneeId,
+      dueDateFrom,
+      dueDateTo,
     };
   });
 

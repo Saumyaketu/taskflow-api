@@ -260,6 +260,96 @@ describe('Task Management Engine & Lifecycle Suite', () => {
           /order must be either 'asc' or 'desc'/
         );
       });
+
+      // Filter parameters
+      it('parses single and multiple status filters (comma-separated or array)', () => {
+        const single = listTasksQuerySchema.parse({ status: 'TODO' });
+        expect(single.status).toEqual([TaskStatus.TODO]);
+
+        const commaSeparated = listTasksQuerySchema.parse({ status: 'TODO, IN_PROGRESS' });
+        expect(commaSeparated.status).toEqual([TaskStatus.TODO, TaskStatus.IN_PROGRESS]);
+
+        const arrayInput = listTasksQuerySchema.parse({ status: ['TODO', 'DONE'] });
+        expect(arrayInput.status).toEqual([TaskStatus.TODO, TaskStatus.DONE]);
+      });
+
+      it('rejects invalid status filter values', () => {
+        expect(() => listTasksQuerySchema.parse({ status: 'INVALID' })).toThrow(
+          /status must be one or more of: TODO, IN_PROGRESS, DONE/
+        );
+        expect(() => listTasksQuerySchema.parse({ status: 'TODO,UNKNOWN' })).toThrow(
+          /status must be one or more of: TODO, IN_PROGRESS, DONE/
+        );
+      });
+
+      it('parses single and multiple priority filters (comma-separated or array)', () => {
+        const single = listTasksQuerySchema.parse({ priority: 'HIGH' });
+        expect(single.priority).toEqual([Priority.HIGH]);
+
+        const multiple = listTasksQuerySchema.parse({ priority: 'LOW,MEDIUM' });
+        expect(multiple.priority).toEqual([Priority.LOW, Priority.MEDIUM]);
+
+        const arrayInput = listTasksQuerySchema.parse({ priority: ['HIGH', 'LOW'] });
+        expect(arrayInput.priority).toEqual([Priority.HIGH, Priority.LOW]);
+      });
+
+      it('rejects invalid priority filter values', () => {
+        expect(() => listTasksQuerySchema.parse({ priority: 'URGENT' })).toThrow(
+          /priority must be one or more of: LOW, MEDIUM, HIGH/
+        );
+      });
+
+      it('parses assigneeId and alias assignee_id', () => {
+        const parsed1 = listTasksQuerySchema.parse({ assigneeId: 'user-123' });
+        expect(parsed1.assigneeId).toBe('user-123');
+
+        const parsed2 = listTasksQuerySchema.parse({ assignee_id: 'user-456' });
+        expect(parsed2.assigneeId).toBe('user-456');
+      });
+
+      it('parses due_date_from and due_date_to range and sets date-only to end-of-day', () => {
+        const parsed = listTasksQuerySchema.parse({
+          due_date_from: '2026-11-01',
+          due_date_to: '2026-11-30',
+        });
+        expect(parsed.dueDateFrom).toEqual(new Date('2026-11-01'));
+        expect(parsed.dueDateTo).toEqual(new Date('2026-11-30T23:59:59.999Z'));
+      });
+
+      it('rejects when due_date_from is after due_date_to', () => {
+        expect(() =>
+          listTasksQuerySchema.parse({
+            due_date_from: '2026-12-31',
+            due_date_to: '2026-12-01',
+          })
+        ).toThrow(/due_date_from cannot be after due_date_to/);
+      });
+
+      it('parses compound filter query with all parameters combined', () => {
+        const compound = listTasksQuerySchema.parse({
+          page: '2',
+          limit: '20',
+          sort_by: 'due_date',
+          order: 'desc',
+          status: 'TODO,IN_PROGRESS',
+          priority: 'HIGH',
+          assignee_id: 'user-999',
+          due_date_from: '2026-11-01',
+          due_date_to: '2026-11-30',
+        });
+
+        expect(compound).toEqual({
+          page: 2,
+          limit: 20,
+          sortBy: 'dueDate',
+          order: 'desc',
+          status: [TaskStatus.TODO, TaskStatus.IN_PROGRESS],
+          priority: [Priority.HIGH],
+          assigneeId: 'user-999',
+          dueDateFrom: new Date('2026-11-01'),
+          dueDateTo: new Date('2026-11-30T23:59:59.999Z'),
+        });
+      });
     });
   });
 
@@ -437,6 +527,97 @@ describe('Task Management Engine & Lifecycle Suite', () => {
           skip: 0,
           take: 20,
           orderBy: [{ dueDate: 'desc' }, { id: 'asc' }],
+        })
+      );
+    });
+
+    // Repository Filtering Unit Tests
+    it('findProjectTasks: applies status, priority, and assigneeId filters in where clause', async () => {
+      const mockDb = {
+        task: {
+          count: vi.fn().mockResolvedValue(1),
+          findMany: vi.fn().mockResolvedValue([createTaskFixture()]),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      await repo.findProjectTasks({
+        projectId: 'p-1',
+        page: 1,
+        limit: 10,
+        status: [TaskStatus.TODO, TaskStatus.IN_PROGRESS],
+        priority: [Priority.HIGH],
+        assigneeId: member.id,
+      });
+
+      const expectedWhere = {
+        projectId: 'p-1',
+        status: { in: [TaskStatus.TODO, TaskStatus.IN_PROGRESS] },
+        priority: { in: [Priority.HIGH] },
+        assigneeId: member.id,
+      };
+
+      expect(mockDb.task.count).toHaveBeenCalledWith({ where: expectedWhere });
+      expect(mockDb.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expectedWhere })
+      );
+    });
+
+    it('findProjectTasks: applies dueDate date range filter (gte and lte)', async () => {
+      const mockDb = {
+        task: {
+          count: vi.fn().mockResolvedValue(1),
+          findMany: vi.fn().mockResolvedValue([createTaskFixture()]),
+        },
+      } as any;
+
+      const from = new Date('2026-11-01T00:00:00.000Z');
+      const to = new Date('2026-11-30T23:59:59.999Z');
+
+      const repo = new TaskRepository(mockDb);
+      await repo.findProjectTasks({
+        projectId: 'p-1',
+        page: 1,
+        limit: 10,
+        dueDateFrom: from,
+        dueDateTo: to,
+      });
+
+      const expectedWhere = {
+        projectId: 'p-1',
+        dueDate: { gte: from, lte: to },
+      };
+
+      expect(mockDb.task.count).toHaveBeenCalledWith({ where: expectedWhere });
+      expect(mockDb.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expectedWhere })
+      );
+    });
+
+    it('findProjectTasks: applies single-bound dueDate filter (gte only or lte only)', async () => {
+      const mockDb = {
+        task: {
+          count: vi.fn().mockResolvedValue(1),
+          findMany: vi.fn().mockResolvedValue([createTaskFixture()]),
+        },
+      } as any;
+
+      const from = new Date('2026-11-01T00:00:00.000Z');
+
+      const repo = new TaskRepository(mockDb);
+      await repo.findProjectTasks({
+        projectId: 'p-1',
+        page: 1,
+        limit: 10,
+        dueDateFrom: from,
+      });
+
+      expect(mockDb.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            projectId: 'p-1',
+            dueDate: { gte: from },
+          },
         })
       );
     });
@@ -811,6 +992,46 @@ describe('Task Management Engine & Lifecycle Suite', () => {
         });
 
         expect(res).toEqual(paginatedResult);
+      });
+
+      it('forwards filter criteria to task repository', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+        const paginatedResult = {
+          tasks: [createTaskFixture()],
+          total: 1,
+          page: 1,
+          limit: 10,
+          totalPages: 1,
+        };
+        const mockTaskRepo = {
+          findProjectTasks: vi.fn().mockResolvedValue(paginatedResult),
+        } as any;
+
+        const from = new Date('2026-11-01');
+        const to = new Date('2026-11-30');
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        await service.getProjectTasks(member.id, 'p-1', {
+          page: 1,
+          limit: 10,
+          status: [TaskStatus.TODO, TaskStatus.IN_PROGRESS],
+          priority: [Priority.HIGH],
+          assigneeId: member.id,
+          dueDateFrom: from,
+          dueDateTo: to,
+        });
+
+        expect(mockTaskRepo.findProjectTasks).toHaveBeenCalledWith({
+          projectId: 'p-1',
+          page: 1,
+          limit: 10,
+          status: [TaskStatus.TODO, TaskStatus.IN_PROGRESS],
+          priority: [Priority.HIGH],
+          assigneeId: member.id,
+          dueDateFrom: from,
+          dueDateTo: to,
+        });
       });
 
       it('rejects outsider non-member with 403 Forbidden', async () => {
@@ -1909,6 +2130,314 @@ describe('Task Management Engine & Lifecycle Suite', () => {
       expect(res.status).toBe(200);
       expect(res.body.tasks).toHaveLength(1);
       expect(res.body.pagination.page).toBe(1);
+    });
+  });
+
+  // =========================================================================
+  // 9. Multi-Criteria Task Filtering Engine
+  // =========================================================================
+  describe('Multi-Criteria Task Filtering Engine (GET /projects/:projectId/tasks)', () => {
+    const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+
+    beforeEach(() => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+    });
+
+    it('filters tasks by single status (?status=TODO)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?status=TODO')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            projectId: 'p-1',
+            status: { in: [TaskStatus.TODO] },
+          }),
+        })
+      );
+    });
+
+    it('filters tasks by multiple statuses using comma-separated string (?status=TODO,IN_PROGRESS)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(2);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([
+        createTaskFixture({ status: TaskStatus.TODO }),
+        createTaskFixture({ id: 't-2', status: TaskStatus.IN_PROGRESS }),
+      ]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?status=TODO,IN_PROGRESS')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: [TaskStatus.TODO, TaskStatus.IN_PROGRESS] },
+          }),
+        })
+      );
+    });
+
+    it('filters tasks by multiple statuses using repeated query parameters (?status=TODO&status=DONE)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(2);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([
+        createTaskFixture({ status: TaskStatus.TODO }),
+        createTaskFixture({ id: 't-2', status: TaskStatus.DONE }),
+      ]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?status=TODO&status=DONE')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: [TaskStatus.TODO, TaskStatus.DONE] },
+          }),
+        })
+      );
+    });
+
+    it('filters tasks by single priority (?priority=HIGH)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?priority=HIGH')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            priority: { in: [Priority.HIGH] },
+          }),
+        })
+      );
+    });
+
+    it('filters tasks by multiple priorities (?priority=LOW,MEDIUM)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?priority=LOW,MEDIUM')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            priority: { in: [Priority.LOW, Priority.MEDIUM] },
+          }),
+        })
+      );
+    });
+
+    it('filters tasks by assigned user (?assigneeId=...) and alias (?assignee_id=...)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      // Using assigneeId
+      const res1 = await request(app)
+        .get(`/projects/p-1/tasks?assigneeId=${member.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res1.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            assigneeId: member.id,
+          }),
+        })
+      );
+
+      // Using assignee_id alias
+      const res2 = await request(app)
+        .get(`/projects/p-1/tasks?assignee_id=${member.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res2.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            assigneeId: member.id,
+          }),
+        })
+      );
+    });
+
+    it('filters tasks by due date range (?due_date_from=2026-11-01&due_date_to=2026-11-30)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?due_date_from=2026-11-01&due_date_to=2026-11-30')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            dueDate: {
+              gte: new Date('2026-11-01'),
+              lte: new Date('2026-11-30T23:59:59.999Z'),
+            },
+          }),
+        })
+      );
+    });
+
+    it('filters tasks by single due date boundary (?due_date_from=...) or (?due_date_to=...)', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      // gte only
+      const resFrom = await request(app)
+        .get('/projects/p-1/tasks?due_date_from=2026-11-01')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(resFrom.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            dueDate: {
+              gte: new Date('2026-11-01'),
+            },
+          }),
+        })
+      );
+
+      // lte only
+      const resTo = await request(app)
+        .get('/projects/p-1/tasks?due_date_to=2026-11-30')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(resTo.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            dueDate: {
+              lte: new Date('2026-11-30T23:59:59.999Z'),
+            },
+          }),
+        })
+      );
+    });
+
+    it('executes compound multi-criteria query combining status, priority, assignee, date range, pagination, and sorting', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(42);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get(
+          `/projects/p-1/tasks?page=2&limit=15&sort_by=due_date&order=desc&status=TODO,IN_PROGRESS&priority=HIGH&assigneeId=${member.id}&due_date_from=2026-11-01&due_date_to=2026-11-30`
+        )
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.pagination).toEqual({
+        total: 42,
+        page: 2,
+        limit: 15,
+        totalPages: 3,
+      });
+
+      expect(findManySpy).toHaveBeenCalledWith({
+        where: {
+          projectId: 'p-1',
+          status: { in: [TaskStatus.TODO, TaskStatus.IN_PROGRESS] },
+          priority: { in: [Priority.HIGH] },
+          assigneeId: member.id,
+          dueDate: {
+            gte: new Date('2026-11-01'),
+            lte: new Date('2026-11-30T23:59:59.999Z'),
+          },
+        },
+        skip: 15,
+        take: 15,
+        orderBy: [{ dueDate: 'desc' }, { id: 'asc' }],
+        include: {
+          creator: { select: { id: true, name: true, email: true } },
+          assignee: { select: { id: true, name: true, email: true } },
+        },
+      });
+    });
+
+    it('rejects invalid status filter with 422 Validation Error', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/tasks?status=INVALID_STATUS')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(
+        res.body.error.details.some((d: any) =>
+          d.message.includes('status must be one or more of: TODO, IN_PROGRESS, DONE')
+        )
+      ).toBe(true);
+    });
+
+    it('rejects invalid priority filter with 422 Validation Error', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/tasks?priority=SUPER_HIGH')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(
+        res.body.error.details.some((d: any) =>
+          d.message.includes('priority must be one or more of: LOW, MEDIUM, HIGH')
+        )
+      ).toBe(true);
+    });
+
+    it('rejects malformed due_date_from format with 422 Validation Error', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/tasks?due_date_from=not-a-valid-date')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects reversed date range where due_date_from is after due_date_to with 422 Validation Error', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/tasks?due_date_from=2026-12-31&due_date_to=2026-11-01')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(
+        res.body.error.details.some((d: any) =>
+          d.message.includes('due_date_from cannot be after due_date_to')
+        )
+      ).toBe(true);
+    });
+
+    it('supports compound filtering via versioned route /api/v1/projects/:projectId/tasks', async () => {
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/api/v1/projects/p-1/tasks?status=DONE&priority=HIGH')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: [TaskStatus.DONE] },
+            priority: { in: [Priority.HIGH] },
+          }),
+        })
+      );
     });
   });
 });

@@ -1,5 +1,10 @@
 import { TaskStatus } from '@prisma/client';
-import { TaskRepository, TaskWithDetails, PaginatedTasksResult } from '../repositories/task.repository.js';
+import {
+  TaskRepository,
+  TaskWithDetails,
+  PaginatedTasksResult,
+  FindProjectTasksOptions,
+} from '../repositories/task.repository.js';
 import { ProjectRepository } from '../repositories/project.repository.js';
 import { CreateTaskInput, UpdateTaskInput } from '../schemas/task.schema.js';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../errors/AppError.js';
@@ -181,7 +186,7 @@ export class TaskService {
   }
 
   /**
-   * Retrieves a paginated and sorted list of tasks for a project.
+   * Retrieves a paginated, sorted, and filtered list of tasks for a project.
    *
    * Business Rules:
    * 1. Project must exist (404 Not Found if missing).
@@ -191,12 +196,7 @@ export class TaskService {
   async getProjectTasks(
     userId: string,
     projectId: string,
-    options: {
-      page: number;
-      limit: number;
-      sortBy?: 'createdAt' | 'dueDate';
-      order?: 'asc' | 'desc';
-    }
+    options: Omit<FindProjectTasksOptions, 'projectId'>
   ): Promise<PaginatedTasksResult> {
     // 1. Verify project existence
     const project = await this.projectRepository.findById(projectId);
@@ -219,10 +219,7 @@ export class TaskService {
     // 3. Delegate to repository
     return this.taskRepository.findProjectTasks({
       projectId,
-      page: options.page,
-      limit: options.limit,
-      sortBy: options.sortBy,
-      order: options.order,
+      ...options,
     });
   }
 }
