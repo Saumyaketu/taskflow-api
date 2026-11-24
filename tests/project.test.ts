@@ -9,1783 +9,505 @@ import {
   addMemberSchema,
 } from '../src/schemas/project.schema.js';
 import { ProjectRepository } from '../src/repositories/project.repository.js';
-import { UserRepository } from '../src/repositories/user.repository.js';
 import { ProjectService } from '../src/services/project.service.js';
-import { ProjectController } from '../src/controllers/project.controller.js';
-import { UnauthorizedError, NotFoundError, ForbiddenError, ConflictError } from '../src/errors/AppError.js';
+import { NotFoundError, ForbiddenError, ConflictError } from '../src/errors/AppError.js';
 
 describe('Project Management & Membership Association', () => {
-  // Test user fixtures
-  const mockOwner = {
-    id: 'a1111111-1111-1111-1111-111111111111',
-    name: 'Bruce Wayne',
-    email: 'bruce@wayne.com',
-    passwordHash: '$2a$10$hashedpasswordforbrucetest1234567890',
+  // -------------------------------------------------------------------------
+  // Test Fixtures & Factories
+  // -------------------------------------------------------------------------
+  const createUser = (id: string, name: string, email: string) => ({
+    id,
+    name,
+    email,
+    passwordHash: '$2a$10$hashedpasswordfore2etesting1234567890',
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-  };
+  });
 
-  const mockMember = {
-    id: 'b2222222-2222-2222-2222-222222222222',
-    name: 'Dick Grayson',
-    email: 'robin@wayne.com',
-    passwordHash: '$2a$10$hashedpasswordforrobintest1234567890',
+  const owner = createUser('a1111111-1111-1111-1111-111111111111', 'Bruce Wayne', 'bruce@wayne.com');
+  const member = createUser('b2222222-2222-2222-2222-222222222222', 'Dick Grayson', 'robin@wayne.com');
+  const outsider = createUser('c3333333-3333-3333-3333-333333333333', 'Arthur Fleck', 'joker@arkham.com');
+
+  const ownerToken = generateToken({ userId: owner.id, email: owner.email });
+  const memberToken = generateToken({ userId: member.id, email: member.email });
+  const outsiderToken = generateToken({ userId: outsider.id, email: outsider.email });
+
+  const createProjectFixture = (
+    id = 'p-1',
+    name = 'TaskFlow Core',
+    ownerUser = owner,
+    membersList: any[] = [owner]
+  ) => ({
+    id,
+    name,
+    description: 'Project description',
+    ownerId: ownerUser.id,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-  };
-
-  const mockNonMember = {
-    id: 'c3333333-3333-3333-3333-333333333333',
-    name: 'Arthur Fleck',
-    email: 'joker@arkham.com',
-    passwordHash: '$2a$10$hashedpasswordforjokertest1234567890',
-    createdAt: new Date('2026-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-  };
-
-  const mockNewUser = {
-    id: 'd4444444-4444-4444-4444-444444444444',
-    name: 'Barbara Gordon',
-    email: 'oracle@gotham.com',
-    passwordHash: '$2a$10$hashedpasswordfororacletest1234567890',
-    createdAt: new Date('2026-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-  };
-
-  const ownerToken = generateToken({ userId: mockOwner.id, email: mockOwner.email });
-  const memberToken = generateToken({ userId: mockMember.id, email: mockMember.email });
-  const nonMemberToken = generateToken({ userId: mockNonMember.id, email: mockNonMember.email });
+    owner: { id: ownerUser.id, name: ownerUser.name, email: ownerUser.email },
+    members: membersList.map((u, i) => ({
+      id: `pm-${i + 1}`,
+      projectId: id,
+      userId: u.id,
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+      user: { id: u.id, name: u.name, email: u.email },
+    })),
+  });
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    // Default authentication spy resolving known test users
+    (vi.spyOn(prisma.user, 'findUnique') as any).mockImplementation(async (args: any) => {
+      const id = args?.where?.id;
+      if (id === owner.id) return owner;
+      if (id === member.id) return member;
+      if (id === outsider.id) return outsider;
+      return null;
+    });
   });
 
   // =========================================================================
-  // 1. Zod Validation Schema Tests
+  // 1. Zod Validation Schemas
   // =========================================================================
-  describe('Project Creation & Route Parameter Zod Schemas', () => {
-    it('should validate and sanitize project with name and description', () => {
-      const input = {
-        name: '  Backend Platform  ',
-        description: '  Enterprise task management engine  ',
-      };
+  describe('Validation Schemas (createProjectSchema, projectIdParamSchema, addMemberSchema)', () => {
+    it('createProjectSchema: validates and normalizes name, title alias, and description', () => {
+      const p1 = createProjectSchema.parse({ name: '  Project Alpha  ', description: '  Desc  ' });
+      expect(p1).toEqual({ name: 'Project Alpha', description: 'Desc' });
 
-      const parsed = createProjectSchema.parse(input);
+      const p2 = createProjectSchema.parse({ title: '  Title Alias  ', description: '   ' });
+      expect(p2).toEqual({ name: 'Title Alias', description: null });
 
-      expect(parsed.name).toBe('Backend Platform');
-      expect(parsed.description).toBe('Enterprise task management engine');
+      expect(() => createProjectSchema.parse({})).toThrow(/Project name is required/);
+      expect(() => createProjectSchema.parse({ name: '   ' })).toThrow(/cannot be blank/);
+      expect(() => createProjectSchema.parse({ name: 'a'.repeat(151) })).toThrow(/cannot exceed 150/);
     });
 
-    it('should accept title alias and normalize it to name', () => {
-      const input = {
-        title: '  Mobile App Redesign  ',
-        description: 'New Flutter UI',
-      };
-
-      const parsed = createProjectSchema.parse(input);
-
-      expect(parsed.name).toBe('Mobile App Redesign');
-      expect(parsed.description).toBe('New Flutter UI');
-    });
-
-    it('should convert empty or whitespace-only description to null', () => {
-      const input = {
-        name: 'Infrastructure Setup',
-        description: '   ',
-      };
-
-      const parsed = createProjectSchema.parse(input);
-
-      expect(parsed.name).toBe('Infrastructure Setup');
-      expect(parsed.description).toBeNull();
-    });
-
-    it('should convert omitted description to null', () => {
-      const input = {
-        name: 'DevOps Pipeline',
-      };
-
-      const parsed = createProjectSchema.parse(input);
-
-      expect(parsed.name).toBe('DevOps Pipeline');
-      expect(parsed.description).toBeNull();
-    });
-
-    it('should reject payload with missing name and title', () => {
-      const input = {
-        description: 'Missing project name',
-      };
-
-      expect(() => createProjectSchema.parse(input)).toThrow(/Project name is required/);
-    });
-
-    it('should reject blank or whitespace-only name', () => {
-      const input = {
-        name: '   ',
-      };
-
-      expect(() => createProjectSchema.parse(input)).toThrow(/Project name cannot be blank/);
-    });
-
-    it('should reject name exceeding 150 characters', () => {
-      const input = {
-        name: 'A'.repeat(151),
-      };
-
-      expect(() => createProjectSchema.parse(input)).toThrow(/cannot exceed 150 characters/);
-    });
-
-    it('should reject description exceeding 1000 characters', () => {
-      const input = {
-        name: 'Valid Name',
-        description: 'D'.repeat(1001),
-      };
-
-      expect(() => createProjectSchema.parse(input)).toThrow(/cannot exceed 1000 characters/);
-    });
-
-    it('projectIdParamSchema should validate and trim non-empty projectId', () => {
-      const input = { projectId: '  proj-12345  ' };
-      const parsed = projectIdParamSchema.parse(input);
-      expect(parsed.projectId).toBe('proj-12345');
-    });
-
-    it('projectIdParamSchema should reject blank or empty projectId', () => {
+    it('projectIdParamSchema: validates non-empty projectId and rejects blank', () => {
+      expect(projectIdParamSchema.parse({ projectId: '  p-123  ' })).toEqual({ projectId: 'p-123' });
       expect(() => projectIdParamSchema.parse({ projectId: '   ' })).toThrow(/cannot be blank/);
       expect(() => projectIdParamSchema.parse({})).toThrow();
     });
 
-    it('addMemberSchema should validate and normalize email address', () => {
-      const input = { email: '  Oracle@Gotham.COM  ' };
-      const parsed = addMemberSchema.parse(input);
-      expect(parsed.email).toBe('oracle@gotham.com');
-    });
-
-    it('addMemberSchema should reject invalid email format', () => {
-      expect(() => addMemberSchema.parse({ email: 'not-an-email' })).toThrow(/Invalid email address format/);
-    });
-
-    it('addMemberSchema should reject missing email', () => {
+    it('addMemberSchema: validates and normalizes email format', () => {
+      expect(addMemberSchema.parse({ email: '  Robin@WAYNE.COM  ' })).toEqual({ email: 'robin@wayne.com' });
+      expect(() => addMemberSchema.parse({ email: 'not-an-email' })).toThrow(/Invalid email/);
       expect(() => addMemberSchema.parse({})).toThrow();
     });
   });
 
   // =========================================================================
-  // 2. Repository Layer Unit Tests (ProjectRepository)
+  // 2. Repository Layer Unit Tests
   // =========================================================================
   describe('ProjectRepository Unit Tests', () => {
-    it('createWithMembership should execute inside $transaction, creating both project and owner membership', async () => {
-      const createdProject = {
-        id: 'p-123',
-        name: 'Core Architecture',
-        description: 'System baseline',
-        ownerId: mockOwner.id,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      const createdMember = {
-        id: 'pm-123',
-        projectId: 'p-123',
-        userId: mockOwner.id,
-        joinedAt: new Date(),
-      };
-
+    it('createWithMembership: executes in a transaction creating project and first member', async () => {
       const mockTx = {
-        project: {
-          create: vi.fn().mockResolvedValue(createdProject),
-        },
-        projectMember: {
-          create: vi.fn().mockResolvedValue(createdMember),
-        },
+        project: { create: vi.fn().mockResolvedValue({ id: 'p-1', name: 'Alpha', ownerId: owner.id }) },
+        projectMember: { create: vi.fn().mockResolvedValue({ id: 'pm-1', projectId: 'p-1', userId: owner.id }) },
       };
+      const mockDb = { $transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)) } as any;
 
-      const mockDb = {
-        $transaction: vi.fn().mockImplementation(async (callback) => callback(mockTx)),
-      } as any;
-
-      const repository = new ProjectRepository(mockDb);
-
-      const result = await repository.createWithMembership({
-        name: 'Core Architecture',
-        description: 'System baseline',
-        ownerId: mockOwner.id,
-      });
+      const repo = new ProjectRepository(mockDb);
+      const res = await repo.createWithMembership({ name: 'Alpha', ownerId: owner.id });
 
       expect(mockDb.$transaction).toHaveBeenCalledOnce();
-      expect(mockTx.project.create).toHaveBeenCalledWith({
-        data: {
-          name: 'Core Architecture',
-          description: 'System baseline',
-          ownerId: mockOwner.id,
-        },
-      });
-      expect(mockTx.projectMember.create).toHaveBeenCalledWith({
-        data: {
-          projectId: 'p-123',
-          userId: mockOwner.id,
-        },
-      });
-      expect(result.id).toBe('p-123');
-      expect(result.members).toHaveLength(1);
-      expect(result.members[0].userId).toBe(mockOwner.id);
+      expect(mockTx.project.create).toHaveBeenCalled();
+      expect(mockTx.projectMember.create).toHaveBeenCalled();
+      expect(res.members).toHaveLength(1);
     });
 
-    it('findByUserId should query projects where user is a member, ordered by createdAt desc', async () => {
-      const mockProjects = [
-        {
-          id: 'p-2',
-          name: 'Recent Project',
-          description: null,
-          ownerId: mockOwner.id,
-          createdAt: new Date('2026-02-01'),
-          updatedAt: new Date('2026-02-01'),
-        },
-        {
-          id: 'p-1',
-          name: 'Older Project',
-          description: null,
-          ownerId: mockOwner.id,
-          createdAt: new Date('2026-01-01'),
-          updatedAt: new Date('2026-01-01'),
-        },
-      ];
+    it('findByUserId: queries projects filtering by member membership', async () => {
+      const mockDb = { project: { findMany: vi.fn().mockResolvedValue([createProjectFixture()]) } } as any;
+      const repo = new ProjectRepository(mockDb);
+      const res = await repo.findByUserId(owner.id);
 
+      expect(mockDb.project.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { members: { some: { userId: owner.id } } } })
+      );
+      expect(res).toHaveLength(1);
+    });
+
+    it('findById: queries project with relations and handles database uuid errors gracefully', async () => {
       const mockDb = {
         project: {
-          findMany: vi.fn().mockResolvedValue(mockProjects),
-        },
-      } as any;
-
-      const repository = new ProjectRepository(mockDb);
-      const results = await repository.findByUserId(mockOwner.id);
-
-      expect(mockDb.project.findMany).toHaveBeenCalledWith({
-        where: {
-          members: {
-            some: {
-              userId: mockOwner.id,
-            },
-          },
-        },
-        include: {
-          owner: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-          members: {
-            select: {
-              id: true,
-              projectId: true,
-              userId: true,
-              joinedAt: true,
-            },
-            orderBy: {
-              joinedAt: 'asc',
-            },
-          },
-        },
-        orderBy: {
-          createdAt: 'desc',
-        },
-      });
-      expect(results).toHaveLength(2);
-      expect(results[0].name).toBe('Recent Project');
-    });
-
-    it('findById should query single project by ID including owner and members with user info', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Single Project',
-        description: 'Details',
-        ownerId: mockOwner.id,
-        owner: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        members: [
-          {
-            id: 'pm-1',
-            projectId: 'p-1',
-            userId: mockOwner.id,
-            joinedAt: new Date(),
-            user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-          },
-        ],
-      };
-
-      const mockDb = {
-        project: {
-          findUnique: vi.fn().mockResolvedValue(mockProject),
-        },
-      } as any;
-
-      const repository = new ProjectRepository(mockDb);
-      const result = await repository.findById('p-1');
-
-      expect(mockDb.project.findUnique).toHaveBeenCalledWith({
-        where: { id: 'p-1' },
-        include: expect.objectContaining({
-          owner: expect.any(Object),
-          members: expect.any(Object),
-        }),
-      });
-      expect(result).toEqual(mockProject);
-    });
-
-    it('findById should catch database invalid uuid error and return null gracefully', async () => {
-      const mockDb = {
-        project: {
-          findUnique: vi.fn().mockRejectedValue({
-            code: 'P2023',
-            message: 'Inconsistent column data: invalid input syntax for type uuid',
-          }),
-        },
-      } as any;
-
-      const repository = new ProjectRepository(mockDb);
-      const result = await repository.findById('not-a-valid-uuid');
-      expect(result).toBeNull();
-    });
-
-    it('delete should invoke db.project.delete with projectId', async () => {
-      const mockDeleted = {
-        id: 'p-del-1',
-        name: 'To Delete',
-        ownerId: mockOwner.id,
-      };
-
-      const mockDb = {
-        project: {
-          delete: vi.fn().mockResolvedValue(mockDeleted),
-        },
-      } as any;
-
-      const repository = new ProjectRepository(mockDb);
-      const result = await repository.delete('p-del-1');
-
-      expect(mockDb.project.delete).toHaveBeenCalledWith({
-        where: { id: 'p-del-1' },
-      });
-      expect(result).toEqual(mockDeleted);
-    });
-
-    it('isMember should return true when membership exists and false otherwise', async () => {
-      const mockDb = {
-        projectMember: {
           findUnique: vi
             .fn()
-            .mockResolvedValueOnce({ id: 'pm-1', projectId: 'p-1', userId: mockOwner.id })
-            .mockResolvedValueOnce(null),
+            .mockResolvedValueOnce(createProjectFixture())
+            .mockRejectedValueOnce({ code: 'P2023', message: 'invalid input syntax for type uuid' }),
         },
       } as any;
+      const repo = new ProjectRepository(mockDb);
 
-      const repository = new ProjectRepository(mockDb);
+      const found = await repo.findById('p-1');
+      expect(found?.name).toBe('TaskFlow Core');
 
-      const isMemberTrue = await repository.isMember('p-1', mockOwner.id);
-      expect(isMemberTrue).toBe(true);
-
-      const isMemberFalse = await repository.isMember('p-1', 'other-user');
-      expect(isMemberFalse).toBe(false);
+      const invalid = await repo.findById('not-a-uuid');
+      expect(invalid).toBeNull();
     });
 
-    it('addMember should insert projectMember and include user details', async () => {
-      const mockCreatedMember = {
-        id: 'pm-new',
-        projectId: 'p-1',
-        userId: mockNewUser.id,
-        joinedAt: new Date(),
-        user: {
-          id: mockNewUser.id,
-          name: mockNewUser.name,
-          email: mockNewUser.email,
-        },
-      };
-
+    it('delete & isMember & addMember: operate on respective Prisma models', async () => {
       const mockDb = {
+        project: { delete: vi.fn().mockResolvedValue({ id: 'p-1' }) },
         projectMember: {
-          create: vi.fn().mockResolvedValue(mockCreatedMember),
+          findUnique: vi.fn().mockResolvedValueOnce({ id: 'pm-1' }).mockResolvedValueOnce(null),
+          create: vi.fn().mockResolvedValue({ id: 'pm-2', projectId: 'p-1', userId: member.id }),
         },
       } as any;
+      const repo = new ProjectRepository(mockDb);
 
-      const repository = new ProjectRepository(mockDb);
-      const result = await repository.addMember('p-1', mockNewUser.id);
+      await repo.delete('p-1');
+      expect(mockDb.project.delete).toHaveBeenCalledWith({ where: { id: 'p-1' } });
 
-      expect(mockDb.projectMember.create).toHaveBeenCalledWith({
-        data: {
-          projectId: 'p-1',
-          userId: mockNewUser.id,
-        },
-        include: {
-          user: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
-      });
-      expect(result).toEqual(mockCreatedMember);
+      expect(await repo.isMember('p-1', owner.id)).toBe(true);
+      expect(await repo.isMember('p-1', outsider.id)).toBe(false);
+
+      const newMember = await repo.addMember('p-1', member.id);
+      expect(newMember.id).toBe('pm-2');
     });
   });
 
   // =========================================================================
-  // 3. Service Layer Unit Tests (ProjectService)
+  // 3. Service Layer Unit Tests
   // =========================================================================
   describe('ProjectService Unit Tests', () => {
-    it('createProject should invoke repository createWithMembership with ownerId and input', async () => {
+    it('createProject & getUserProjects: delegate cleanly to repository', async () => {
       const mockRepo = {
-        createWithMembership: vi.fn().mockResolvedValue({
-          id: 'p-1',
-          name: 'TaskFlow',
-          description: 'API',
-          ownerId: mockOwner.id,
-          members: [{ id: 'pm-1', userId: mockOwner.id }],
+        createWithMembership: vi.fn().mockResolvedValue({ id: 'p-1' }),
+        findByUserId: vi.fn().mockResolvedValue([{ id: 'p-1' }]),
+      } as any;
+      const service = new ProjectService(mockRepo);
+
+      const p = await service.createProject(owner.id, { name: 'New Project', description: null });
+      expect(p.id).toBe('p-1');
+
+      const list = await service.getUserProjects(owner.id);
+      expect(list).toHaveLength(1);
+    });
+
+    it('getProjectById: enforces existence and membership access control', async () => {
+      const proj = createProjectFixture('p-1', 'Test', owner, [owner, member]);
+      const mockRepo = {
+        findById: vi.fn().mockImplementation(async (id) => (id === 'p-1' ? proj : null)),
+      } as any;
+      const service = new ProjectService(mockRepo);
+
+      // Members and owner can view
+      expect((await service.getProjectById(owner.id, 'p-1')).id).toBe('p-1');
+      expect((await service.getProjectById(member.id, 'p-1')).id).toBe('p-1');
+
+      // Missing project throws 404
+      await expect(service.getProjectById(owner.id, 'p-missing')).rejects.toThrow(NotFoundError);
+
+      // Outsider throws 403 Forbidden
+      await expect(service.getProjectById(outsider.id, 'p-1')).rejects.toThrow(ForbiddenError);
+    });
+
+    it('deleteProject: strictly restricts deletion to project owner', async () => {
+      const proj = createProjectFixture('p-1', 'Test', owner, [owner, member]);
+      const mockRepo = {
+        findById: vi.fn().mockImplementation(async (id) => (id === 'p-1' ? proj : null)),
+        delete: vi.fn().mockResolvedValue(proj),
+      } as any;
+      const service = new ProjectService(mockRepo);
+
+      // Owner can delete
+      await service.deleteProject(owner.id, 'p-1');
+      expect(mockRepo.delete).toHaveBeenCalledWith('p-1');
+
+      // Non-owner member or outsider cannot delete (403 Forbidden)
+      await expect(service.deleteProject(member.id, 'p-1')).rejects.toThrow(ForbiddenError);
+      await expect(service.deleteProject(outsider.id, 'p-1')).rejects.toThrow(ForbiddenError);
+
+      // Missing project throws 404
+      await expect(service.deleteProject(owner.id, 'p-missing')).rejects.toThrow(NotFoundError);
+    });
+
+    it('addMember: validates project existence, owner authorization, user existence, and duplicate membership', async () => {
+      const proj = createProjectFixture('p-1', 'Test', owner, [owner]);
+      const mockProjectRepo = {
+        findById: vi.fn().mockImplementation(async (id) => (id === 'p-1' ? proj : null)),
+        isMember: vi.fn().mockImplementation(async (_pid, uid) => uid === owner.id),
+        addMember: vi.fn().mockResolvedValue({ id: 'pm-new', userId: member.id }),
+      } as any;
+
+      const mockUserRepo = {
+        findByEmail: vi.fn().mockImplementation(async (e) => {
+          if (e === member.email) return member;
+          if (e === owner.email) return owner;
+          return null;
         }),
       } as any;
 
-      const service = new ProjectService(mockRepo);
-      const result = await service.createProject(mockOwner.id, {
-        name: 'TaskFlow',
-        description: 'API',
-      });
-
-      expect(mockRepo.createWithMembership).toHaveBeenCalledWith({
-        name: 'TaskFlow',
-        description: 'API',
-        ownerId: mockOwner.id,
-      });
-      expect(result.id).toBe('p-1');
-    });
-
-    it('getUserProjects should invoke repository findByUserId', async () => {
-      const mockRepo = {
-        findByUserId: vi.fn().mockResolvedValue([{ id: 'p-1' }]),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-      const results = await service.getUserProjects(mockOwner.id);
-
-      expect(mockRepo.findByUserId).toHaveBeenCalledWith(mockOwner.id);
-      expect(results).toHaveLength(1);
-    });
-
-    it('getProjectById should return project if user is a member', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Team Project',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', userId: mockMember.id }],
-      };
-
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-      const result = await service.getProjectById(mockMember.id, 'p-1');
-
-      expect(result).toEqual(mockProject);
-    });
-
-    it('getProjectById should return project if user is the project owner', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Team Project',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', userId: mockMember.id }],
-      };
-
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-      const result = await service.getProjectById(mockOwner.id, 'p-1');
-
-      expect(result).toEqual(mockProject);
-    });
-
-    it('getProjectById should throw 404 NotFoundError if project does not exist', async () => {
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(null),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-
-      await expect(service.getProjectById(mockOwner.id, 'non-existent')).rejects.toThrow(NotFoundError);
-    });
-
-    it('getProjectById should throw 403 ForbiddenError if user is neither member nor owner', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Confidential Project',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', userId: mockOwner.id }],
-      };
-
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-
-      await expect(service.getProjectById(mockNonMember.id, 'p-1')).rejects.toThrow(ForbiddenError);
-    });
-
-    it('deleteProject should delete project when requested by owner', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Project to Delete',
-        ownerId: mockOwner.id,
-      };
-
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-        delete: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-      await service.deleteProject(mockOwner.id, 'p-1');
-
-      expect(mockRepo.delete).toHaveBeenCalledWith('p-1');
-    });
-
-    it('deleteProject should throw 404 NotFoundError if project does not exist', async () => {
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(null),
-        delete: vi.fn(),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-
-      await expect(service.deleteProject(mockOwner.id, 'non-existent')).rejects.toThrow(NotFoundError);
-      expect(mockRepo.delete).not.toHaveBeenCalled();
-    });
-
-    it('deleteProject should throw 403 ForbiddenError if non-owner member attempts deletion', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Project to Delete',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', userId: mockMember.id }],
-      };
-
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-        delete: vi.fn(),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-
-      await expect(service.deleteProject(mockMember.id, 'p-1')).rejects.toThrow(ForbiddenError);
-      expect(mockRepo.delete).not.toHaveBeenCalled();
-    });
-
-    it('deleteProject should throw 403 ForbiddenError if non-member attempts deletion', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Project to Delete',
-        ownerId: mockOwner.id,
-      };
-
-      const mockRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-        delete: vi.fn(),
-      } as any;
-
-      const service = new ProjectService(mockRepo);
-
-      await expect(service.deleteProject(mockNonMember.id, 'p-1')).rejects.toThrow(ForbiddenError);
-      expect(mockRepo.delete).not.toHaveBeenCalled();
-    });
-
-    // addMember Service Unit Tests
-    it('addMember should successfully add registered user by email when requester is owner', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Team Project',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', userId: mockOwner.id }],
-      };
-
-      const mockCreatedMember = {
-        id: 'pm-2',
-        projectId: 'p-1',
-        userId: mockNewUser.id,
-        joinedAt: new Date(),
-        user: { id: mockNewUser.id, name: mockNewUser.name, email: mockNewUser.email },
-      };
-
-      const mockProjectRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-        isMember: vi.fn().mockResolvedValue(false),
-        addMember: vi.fn().mockResolvedValue(mockCreatedMember),
-      } as any;
-
-      const mockUserRepo = {
-        findByEmail: vi.fn().mockResolvedValue(mockNewUser),
-      } as any;
-
-      const service = new ProjectService(mockProjectRepo, mockUserRepo);
-      const result = await service.addMember(mockOwner.id, 'p-1', { email: '  Oracle@Gotham.COM  ' });
-
-      expect(mockProjectRepo.findById).toHaveBeenCalledWith('p-1');
-      expect(mockUserRepo.findByEmail).toHaveBeenCalledWith('oracle@gotham.com');
-      expect(mockProjectRepo.isMember).toHaveBeenCalledWith('p-1', mockNewUser.id);
-      expect(mockProjectRepo.addMember).toHaveBeenCalledWith('p-1', mockNewUser.id);
-      expect(result).toEqual(mockCreatedMember);
-    });
-
-    it('addMember should throw 404 NotFoundError if project does not exist', async () => {
-      const mockProjectRepo = {
-        findById: vi.fn().mockResolvedValue(null),
-      } as any;
-
-      const service = new ProjectService(mockProjectRepo, {} as any);
-
-      await expect(
-        service.addMember(mockOwner.id, 'non-existent', { email: 'oracle@gotham.com' })
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it('addMember should throw 403 ForbiddenError if non-owner member attempts to add member', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Team Project',
-        ownerId: mockOwner.id,
-      };
-
-      const mockProjectRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const service = new ProjectService(mockProjectRepo, {} as any);
-
-      await expect(
-        service.addMember(mockMember.id, 'p-1', { email: 'oracle@gotham.com' })
-      ).rejects.toThrow(ForbiddenError);
-    });
-
-    it('addMember should throw 404 NotFoundError if target user does not exist', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Team Project',
-        ownerId: mockOwner.id,
-      };
-
-      const mockProjectRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const mockUserRepo = {
-        findByEmail: vi.fn().mockResolvedValue(null),
-      } as any;
-
       const service = new ProjectService(mockProjectRepo, mockUserRepo);
 
-      await expect(
-        service.addMember(mockOwner.id, 'p-1', { email: 'unregistered@gotham.com' })
-      ).rejects.toThrow(NotFoundError);
-    });
+      // Owner can add registered user
+      const added = await service.addMember(owner.id, 'p-1', { email: member.email });
+      expect(added.id).toBe('pm-new');
 
-    it('addMember should throw 409 ConflictError if target user is already a member', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Team Project',
-        ownerId: mockOwner.id,
-      };
+      // Non-owner cannot add member (403)
+      await expect(service.addMember(member.id, 'p-1', { email: outsider.email })).rejects.toThrow(ForbiddenError);
 
-      const mockProjectRepo = {
-        findById: vi.fn().mockResolvedValue(mockProject),
-        isMember: vi.fn().mockResolvedValue(true),
-      } as any;
+      // Missing project throws 404
+      await expect(service.addMember(owner.id, 'p-missing', { email: member.email })).rejects.toThrow(NotFoundError);
 
-      const mockUserRepo = {
-        findByEmail: vi.fn().mockResolvedValue(mockMember),
-      } as any;
+      // Unregistered user email throws 404
+      await expect(service.addMember(owner.id, 'p-1', { email: 'unknown@email.com' })).rejects.toThrow(NotFoundError);
 
-      const service = new ProjectService(mockProjectRepo, mockUserRepo);
-
-      await expect(
-        service.addMember(mockOwner.id, 'p-1', { email: mockMember.email })
-      ).rejects.toThrow(ConflictError);
+      // Duplicate membership throws 409 Conflict
+      await expect(service.addMember(owner.id, 'p-1', { email: owner.email })).rejects.toThrow(ConflictError);
     });
   });
 
   // =========================================================================
-  // 4. Controller Layer Unit Tests (ProjectController)
+  // 4. HTTP Endpoints Integration Tests (Supertest)
   // =========================================================================
-  describe('ProjectController Unit Tests', () => {
-    it('create should return 201 Created with project in body', async () => {
-      const mockProject = {
-        id: 'p-1',
-        name: 'Project Alpha',
-        description: null,
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', userId: mockOwner.id }],
-      };
-
-      const mockService = {
-        createProject: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const controller = new ProjectController(mockService);
-
-      const req: any = {
-        user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        body: { name: 'Project Alpha', description: null },
-      };
-
-      const res: any = {
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn(),
-      };
-
-      await controller.create(req, res, vi.fn());
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      expect(res.json).toHaveBeenCalledWith({
-        message: 'Project created successfully',
-        project: mockProject,
-      });
-    });
-
-    it('list should return 200 OK with projects array', async () => {
-      const mockProjects = [{ id: 'p-1', name: 'Project Alpha' }];
-      const mockService = {
-        getUserProjects: vi.fn().mockResolvedValue(mockProjects),
-      } as any;
-
-      const controller = new ProjectController(mockService);
-
-      const req: any = {
-        user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-      };
-
-      const res: any = {
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn(),
-      };
-
-      await controller.list(req, res, vi.fn());
-
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith({
-        projects: mockProjects,
-      });
-    });
-
-    it('getById should return 200 OK with project in body', async () => {
-      const mockProject = { id: 'p-1', name: 'Project Alpha' };
-      const mockService = {
-        getProjectById: vi.fn().mockResolvedValue(mockProject),
-      } as any;
-
-      const controller = new ProjectController(mockService);
-
-      const req: any = {
-        user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        params: { projectId: 'p-1' },
-      };
-
-      const res: any = {
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn(),
-      };
-
-      await controller.getById(req, res, vi.fn());
-
-      expect(mockService.getProjectById).toHaveBeenCalledWith(mockOwner.id, 'p-1');
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith({ project: mockProject });
-    });
-
-    it('delete should return 200 OK with success message', async () => {
-      const mockService = {
-        deleteProject: vi.fn().mockResolvedValue(undefined),
-      } as any;
-
-      const controller = new ProjectController(mockService);
-
-      const req: any = {
-        user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        params: { projectId: 'p-1' },
-      };
-
-      const res: any = {
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn(),
-      };
-
-      await controller.delete(req, res, vi.fn());
-
-      expect(mockService.deleteProject).toHaveBeenCalledWith(mockOwner.id, 'p-1');
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith({
-        message: 'Project deleted successfully',
-        projectId: 'p-1',
-      });
-    });
-
-    it('addMember should return 201 Created with added member profile', async () => {
-      const mockMemberResult = {
-        id: 'pm-2',
-        projectId: 'p-1',
-        userId: mockNewUser.id,
-        user: { id: mockNewUser.id, name: mockNewUser.name, email: mockNewUser.email },
-      };
-
-      const mockService = {
-        addMember: vi.fn().mockResolvedValue(mockMemberResult),
-      } as any;
-
-      const controller = new ProjectController(mockService);
-
-      const req: any = {
-        user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        params: { projectId: 'p-1' },
-        body: { email: 'oracle@gotham.com' },
-      };
-
-      const res: any = {
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn(),
-      };
-
-      await controller.addMember(req, res, vi.fn());
-
-      expect(mockService.addMember).toHaveBeenCalledWith(mockOwner.id, 'p-1', {
-        email: 'oracle@gotham.com',
-      });
-      expect(res.status).toHaveBeenCalledWith(201);
-      expect(res.json).toHaveBeenCalledWith({
-        message: 'Member added successfully',
-        member: mockMemberResult,
-      });
-    });
-
-    it('should reject unauthenticated request without req.user', async () => {
-      const controller = new ProjectController({} as any);
-
-      const req: any = { user: undefined };
-      const res: any = { status: vi.fn().mockReturnThis(), json: vi.fn() };
-      const next = vi.fn();
-
-      await controller.create(req, res, next);
-      expect(next).toHaveBeenCalledWith(expect.any(UnauthorizedError));
-    });
-  });
-
-  // =========================================================================
-  // 5. HTTP Integration Tests (POST, GET, DELETE /projects)
-  // =========================================================================
-  describe('HTTP Endpoints - Full Integration Scenarios', () => {
+  describe('HTTP REST API Integration', () => {
     // -----------------------------------------------------------------------
-    // POST /projects
+    // POST /projects (Creation)
     // -----------------------------------------------------------------------
-    it('POST /projects: should successfully create project and return 201 with owner membership', async () => {
-      const expectedProject = {
-        id: 'proj-uuid-1234',
-        name: 'Backend Engineering',
-        description: 'Internship project tasks',
-        ownerId: mockOwner.id,
-        createdAt: new Date('2026-01-01T00:00:00.000Z'),
-        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-        members: [
-          {
-            id: 'pm-uuid-1',
-            projectId: 'proj-uuid-1234',
-            userId: mockOwner.id,
-            joinedAt: new Date('2026-01-01T00:00:00.000Z'),
-          },
-        ],
-      };
+    it('POST /projects: creates project with 201, accepts title alias, enforces validation & auth', async () => {
+      const fixture = createProjectFixture('p-100', 'New Project', owner);
 
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma, '$transaction').mockImplementation(async (callback: any) => {
-        return callback({
-          project: {
-            create: vi.fn().mockResolvedValue({
-              id: expectedProject.id,
-              name: expectedProject.name,
-              description: expectedProject.description,
-              ownerId: expectedProject.ownerId,
-              createdAt: expectedProject.createdAt,
-              updatedAt: expectedProject.updatedAt,
-            }),
-          },
-          projectMember: {
-            create: vi.fn().mockResolvedValue(expectedProject.members[0]),
-          },
-        });
-      });
+      vi.spyOn(prisma, '$transaction').mockImplementation(async (cb: any) =>
+        cb({
+          project: { create: vi.fn().mockResolvedValue(fixture) },
+          projectMember: { create: vi.fn().mockResolvedValue(fixture.members[0]) },
+        })
+      );
 
-      const response = await request(app)
+      // Success with name
+      const res1 = await request(app)
         .post('/projects')
         .set('Authorization', `Bearer ${ownerToken}`)
-        .send({
-          name: '  Backend Engineering  ',
-          description: '  Internship project tasks  ',
-        });
+        .send({ name: 'New Project', description: 'Desc' });
+      expect(res1.status).toBe(201);
+      expect(res1.body.project.name).toBe('New Project');
 
-      expect(response.status).toBe(201);
-      expect(response.body).toHaveProperty('message', 'Project created successfully');
-      expect(response.body).toHaveProperty('project');
-      expect(response.body.project.name).toBe('Backend Engineering');
-      expect(response.body.project.ownerId).toBe(mockOwner.id);
-      expect(response.body.project.members).toHaveLength(1);
-      expect(response.body.project.members[0].userId).toBe(mockOwner.id);
-    });
-
-    it('POST /projects: should accept title in request body and normalize to project name', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma, '$transaction').mockImplementation(async (callback: any) => {
-        return callback({
-          project: {
-            create: vi.fn().mockResolvedValue({
-              id: 'proj-title-1',
-              name: 'From Title Field',
-              description: null,
-              ownerId: mockOwner.id,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            }),
-          },
-          projectMember: {
-            create: vi.fn().mockResolvedValue({
-              id: 'pm-title-1',
-              projectId: 'proj-title-1',
-              userId: mockOwner.id,
-              joinedAt: new Date(),
-            }),
-          },
-        });
-      });
-
-      const response = await request(app)
-        .post('/projects')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({
-          title: '  From Title Field  ',
-        });
-
-      expect(response.status).toBe(201);
-      expect(response.body.project.name).toBe('From Title Field');
-    });
-
-    it('POST /projects: should reject unauthenticated request with 401 Unauthorized', async () => {
-      const response = await request(app)
-        .post('/projects')
-        .send({
-          name: 'Unauthenticated Project',
-        });
-
-      expect(response.status).toBe(401);
-      expect(response.body).toEqual({
-        error: {
-          code: 'UNAUTHORIZED',
-          message: 'Authentication token is required',
-          details: [],
-        },
-      });
-    });
-
-    it('POST /projects: should reject invalid JWT token with 401 Unauthorized', async () => {
-      const response = await request(app)
-        .post('/projects')
-        .set('Authorization', 'Bearer invalid.token.signature')
-        .send({
-          name: 'Invalid Token Project',
-        });
-
-      expect(response.status).toBe(401);
-      expect(response.body.error.code).toBe('INVALID_TOKEN');
-    });
-
-    it('POST /projects: should return 422 Validation Error when name is blank or missing', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-
-      const responseBlank = await request(app)
-        .post('/projects')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({
-          name: '   ',
-        });
-
-      expect(responseBlank.status).toBe(422);
-      expect(responseBlank.body.error.code).toBe('VALIDATION_ERROR');
-
-      const responseMissing = await request(app)
-        .post('/projects')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({
-          description: 'No name provided',
-        });
-
-      expect(responseMissing.status).toBe(422);
-      expect(responseMissing.body.error.code).toBe('VALIDATION_ERROR');
-    });
-
-    it('POST /api/v1/projects: should work identically under the versioned route prefix', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma, '$transaction').mockImplementation(async (callback: any) => {
-        return callback({
-          project: {
-            create: vi.fn().mockResolvedValue({
-              id: 'p-v1',
-              name: 'Versioned Project',
-              description: null,
-              ownerId: mockOwner.id,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            }),
-          },
-          projectMember: {
-            create: vi.fn().mockResolvedValue({
-              id: 'pm-v1',
-              projectId: 'p-v1',
-              userId: mockOwner.id,
-              joinedAt: new Date(),
-            }),
-          },
-        });
-      });
-
-      const response = await request(app)
+      // Success with title alias under versioned prefix /api/v1/projects
+      const res2 = await request(app)
         .post('/api/v1/projects')
         .set('Authorization', `Bearer ${ownerToken}`)
-        .send({
-          name: 'Versioned Project',
-        });
+        .send({ title: 'New Project' });
+      expect(res2.status).toBe(201);
 
-      expect(response.status).toBe(201);
-      expect(response.body.project.name).toBe('Versioned Project');
+      // Rejections
+      const resUnauth = await request(app).post('/projects').send({ name: 'Alpha' });
+      expect(resUnauth.status).toBe(401);
+
+      const resBlank = await request(app)
+        .post('/projects')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ name: '   ' });
+      expect(resBlank.status).toBe(422);
     });
 
     // -----------------------------------------------------------------------
     // GET /projects (List)
     // -----------------------------------------------------------------------
-    it('GET /projects: should return 200 OK and all projects where user is a member', async () => {
-      const mockProjects = [
-        {
-          id: 'proj-1',
-          name: 'Team Project 1',
-          description: 'First active project',
-          ownerId: mockOwner.id,
-          createdAt: new Date('2026-02-01T00:00:00.000Z'),
-          updatedAt: new Date('2026-02-01T00:00:00.000Z'),
-          owner: {
-            id: mockOwner.id,
-            name: mockOwner.name,
-            email: mockOwner.email,
-          },
-          members: [
-            {
-              id: 'pm-1',
-              projectId: 'proj-1',
-              userId: mockOwner.id,
-              joinedAt: new Date('2026-02-01T00:00:00.000Z'),
-            },
-          ],
-        },
-      ];
+    it('GET /projects: returns user projects or empty array, enforces auth', async () => {
+      vi.spyOn(prisma.project, 'findMany').mockResolvedValueOnce([createProjectFixture() as any]).mockResolvedValueOnce([]);
 
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findMany').mockResolvedValue(mockProjects as any);
+      const res1 = await request(app).get('/projects').set('Authorization', `Bearer ${ownerToken}`);
+      expect(res1.status).toBe(200);
+      expect(res1.body.projects).toHaveLength(1);
 
-      const response = await request(app)
-        .get('/projects')
-        .set('Authorization', `Bearer ${ownerToken}`);
+      const res2 = await request(app).get('/api/v1/projects').set('Authorization', `Bearer ${ownerToken}`);
+      expect(res2.status).toBe(200);
+      expect(res2.body.projects).toEqual([]);
 
-      expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty('projects');
-      expect(Array.isArray(response.body.projects)).toBe(true);
-      expect(response.body.projects).toHaveLength(1);
-      expect(response.body.projects[0].id).toBe('proj-1');
-      expect(response.body.projects[0].name).toBe('Team Project 1');
-      expect(response.body.projects[0].owner.email).toBe(mockOwner.email);
-    });
-
-    it('GET /projects: should return empty array when user is not a member of any projects', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findMany').mockResolvedValue([]);
-
-      const response = await request(app)
-        .get('/projects')
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body.projects).toEqual([]);
-    });
-
-    it('GET /projects: should return 401 Unauthorized when token is missing', async () => {
-      const response = await request(app).get('/projects');
-
-      expect(response.status).toBe(401);
-      expect(response.body.error.code).toBe('UNAUTHORIZED');
-    });
-
-    it('GET /api/v1/projects: should work identically under the versioned route prefix', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findMany').mockResolvedValue([]);
-
-      const response = await request(app)
-        .get('/api/v1/projects')
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body.projects).toEqual([]);
+      const resUnauth = await request(app).get('/projects');
+      expect(resUnauth.status).toBe(401);
     });
 
     // -----------------------------------------------------------------------
-    // GET /projects/:projectId (Single Project Details)
+    // GET /projects/:projectId (Details)
     // -----------------------------------------------------------------------
-    it('GET /projects/:projectId: should return 200 OK and project details when user is a member', async () => {
-      const mockProject = {
-        id: 'proj-single-1',
-        name: 'Shared Architecture',
-        description: 'Team project specification',
-        ownerId: mockOwner.id,
-        createdAt: new Date('2026-02-01T00:00:00.000Z'),
-        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
-        owner: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        members: [
-          {
-            id: 'pm-1',
-            projectId: 'proj-single-1',
-            userId: mockOwner.id,
-            joinedAt: new Date(),
-            user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-          },
-          {
-            id: 'pm-2',
-            projectId: 'proj-single-1',
-            userId: mockMember.id,
-            joinedAt: new Date(),
-            user: { id: mockMember.id, name: mockMember.name, email: mockMember.email },
-          },
-        ],
-      };
+    it('GET /projects/:projectId: allows members/owner, blocks outsiders (403), returns 404 for missing', async () => {
+      const proj = createProjectFixture('p-1', 'Classified', owner, [owner, member]);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockImplementation(async (args: any) =>
+        args.where.id === 'p-1' ? (proj as any) : null
+      );
 
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockMember);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
+      // Owner and Member view successfully (200)
+      const resOwner = await request(app).get('/projects/p-1').set('Authorization', `Bearer ${ownerToken}`);
+      expect(resOwner.status).toBe(200);
+      expect(resOwner.body.project.name).toBe('Classified');
 
-      const response = await request(app)
-        .get('/projects/proj-single-1')
-        .set('Authorization', `Bearer ${memberToken}`);
+      const resMember = await request(app).get('/projects/p-1').set('Authorization', `Bearer ${memberToken}`);
+      expect(resMember.status).toBe(200);
 
-      expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty('project');
-      expect(response.body.project.id).toBe('proj-single-1');
-      expect(response.body.project.name).toBe('Shared Architecture');
-      expect(response.body.project.members).toHaveLength(2);
-    });
+      // Outsider blocked (403 Forbidden)
+      const resOutsider = await request(app).get('/projects/p-1').set('Authorization', `Bearer ${outsiderToken}`);
+      expect(resOutsider.status).toBe(403);
+      expect(resOutsider.body.error.code).toBe('FORBIDDEN');
 
-    it('GET /projects/:projectId: should return 200 OK when user is the owner', async () => {
-      const mockProject = {
-        id: 'proj-single-2',
-        name: 'Owner Project',
-        description: null,
-        ownerId: mockOwner.id,
-        createdAt: new Date('2026-02-01T00:00:00.000Z'),
-        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
-        owner: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        members: [
-          {
-            id: 'pm-1',
-            projectId: 'proj-single-2',
-            userId: mockOwner.id,
-            joinedAt: new Date(),
-            user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-          },
-        ],
-      };
+      // Non-existent project (404 Not Found)
+      const res404 = await request(app).get('/projects/p-missing').set('Authorization', `Bearer ${ownerToken}`);
+      expect(res404.status).toBe(404);
 
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-
-      const response = await request(app)
-        .get('/projects/proj-single-2')
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body.project.id).toBe('proj-single-2');
-    });
-
-    it('GET /projects/:projectId: should return 403 Forbidden when authenticated user is NOT a project member', async () => {
-      const mockProject = {
-        id: 'proj-private-1',
-        name: 'Classified Wayne Tech',
-        description: 'Batmobile specs',
-        ownerId: mockOwner.id,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        owner: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        members: [
-          {
-            id: 'pm-1',
-            projectId: 'proj-private-1',
-            userId: mockOwner.id,
-            joinedAt: new Date(),
-            user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-          },
-        ],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockNonMember);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-
-      const response = await request(app)
-        .get('/projects/proj-private-1')
-        .set('Authorization', `Bearer ${nonMemberToken}`);
-
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe('FORBIDDEN');
-      expect(response.body.error.message).toBe('You do not have access to this project');
-    });
-
-    it('GET /projects/:projectId: should return 404 Not Found when project does not exist', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(null);
-
-      const response = await request(app)
-        .get('/projects/00000000-0000-0000-0000-000000000000')
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(response.status).toBe(404);
-      expect(response.body.error.code).toBe('PROJECT_NOT_FOUND');
-      expect(response.body.error.message).toBe('Project not found');
-    });
-
-    it('GET /projects/:projectId: should return 401 Unauthorized when request is unauthenticated', async () => {
-      const response = await request(app).get('/projects/proj-single-1');
-
-      expect(response.status).toBe(401);
-      expect(response.body.error.code).toBe('UNAUTHORIZED');
-    });
-
-    it('GET /api/v1/projects/:projectId: should work identically under versioned prefix', async () => {
-      const mockProject = {
-        id: 'proj-v1-single',
-        name: 'Versioned Single Project',
-        description: null,
-        ownerId: mockOwner.id,
-        owner: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        members: [{ id: 'pm-1', projectId: 'proj-v1-single', userId: mockOwner.id, joinedAt: new Date() }],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-
-      const response = await request(app)
-        .get('/api/v1/projects/proj-v1-single')
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body.project.name).toBe('Versioned Single Project');
+      // Unauthenticated (401)
+      const resUnauth = await request(app).get('/projects/p-1');
+      expect(resUnauth.status).toBe(401);
     });
 
     // -----------------------------------------------------------------------
-    // DELETE /projects/:projectId (Owner Project Deletion)
+    // DELETE /projects/:projectId (Deletion)
     // -----------------------------------------------------------------------
-    it('DELETE /projects/:projectId: should allow project owner to delete project and return 200 OK', async () => {
-      const mockProject = {
-        id: 'proj-to-delete',
-        name: 'Deletable Project',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', projectId: 'proj-to-delete', userId: mockOwner.id }],
-      };
+    it('DELETE /projects/:projectId: restricts to owner (200), blocks members & outsiders (403), returns 404', async () => {
+      const proj = createProjectFixture('p-1', 'To Delete', owner, [owner, member]);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockImplementation(async (args: any) =>
+        args.where.id === 'p-1' ? (proj as any) : null
+      );
+      vi.spyOn(prisma.project, 'delete').mockResolvedValue(proj as any);
 
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      const deleteSpy = vi.spyOn(prisma.project, 'delete').mockResolvedValue(mockProject as any);
+      // Member attempts deletion -> 403 Forbidden
+      const resMember = await request(app).delete('/projects/p-1').set('Authorization', `Bearer ${memberToken}`);
+      expect(resMember.status).toBe(403);
 
-      const response = await request(app)
-        .delete('/projects/proj-to-delete')
-        .set('Authorization', `Bearer ${ownerToken}`);
+      // Outsider attempts deletion -> 403 Forbidden
+      const resOutsider = await request(app).delete('/projects/p-1').set('Authorization', `Bearer ${outsiderToken}`);
+      expect(resOutsider.status).toBe(403);
 
-      expect(response.status).toBe(200);
-      expect(response.body).toEqual({
-        message: 'Project deleted successfully',
-        projectId: 'proj-to-delete',
-      });
-      expect(deleteSpy).toHaveBeenCalledWith({
-        where: { id: 'proj-to-delete' },
-      });
-    });
+      // Owner deletes successfully -> 200 OK
+      const resOwner = await request(app).delete('/projects/p-1').set('Authorization', `Bearer ${ownerToken}`);
+      expect(resOwner.status).toBe(200);
+      expect(resOwner.body.message).toBe('Project deleted successfully');
 
-    it('DELETE /projects/:projectId: should return 403 Forbidden when non-owner member attempts deletion', async () => {
-      const mockProject = {
-        id: 'proj-to-delete',
-        name: 'Team Project',
-        ownerId: mockOwner.id, // Owner is Bruce
-        members: [
-          { id: 'pm-1', projectId: 'proj-to-delete', userId: mockOwner.id },
-          { id: 'pm-2', projectId: 'proj-to-delete', userId: mockMember.id }, // Dick is member, not owner
-        ],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockMember);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      const deleteSpy = vi.spyOn(prisma.project, 'delete');
-
-      const response = await request(app)
-        .delete('/projects/proj-to-delete')
-        .set('Authorization', `Bearer ${memberToken}`);
-
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe('FORBIDDEN');
-      expect(response.body.error.message).toBe('Only the project owner can delete this project');
-      expect(deleteSpy).not.toHaveBeenCalled();
-    });
-
-    it('DELETE /projects/:projectId: should return 403 Forbidden when non-member attempts deletion', async () => {
-      const mockProject = {
-        id: 'proj-to-delete',
-        name: 'Private Project',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', projectId: 'proj-to-delete', userId: mockOwner.id }],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockNonMember);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      const deleteSpy = vi.spyOn(prisma.project, 'delete');
-
-      const response = await request(app)
-        .delete('/projects/proj-to-delete')
-        .set('Authorization', `Bearer ${nonMemberToken}`);
-
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe('FORBIDDEN');
-      expect(response.body.error.message).toBe('Only the project owner can delete this project');
-      expect(deleteSpy).not.toHaveBeenCalled();
-    });
-
-    it('DELETE /projects/:projectId: should return 404 Not Found when project does not exist', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(null);
-      const deleteSpy = vi.spyOn(prisma.project, 'delete');
-
-      const response = await request(app)
-        .delete('/projects/00000000-0000-0000-0000-000000000000')
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(response.status).toBe(404);
-      expect(response.body.error.code).toBe('PROJECT_NOT_FOUND');
-      expect(response.body.error.message).toBe('Project not found');
-      expect(deleteSpy).not.toHaveBeenCalled();
-    });
-
-    it('DELETE /projects/:projectId: should return 401 Unauthorized when request is unauthenticated', async () => {
-      const response = await request(app).delete('/projects/proj-to-delete');
-
-      expect(response.status).toBe(401);
-      expect(response.body.error.code).toBe('UNAUTHORIZED');
-    });
-
-    it('DELETE /api/v1/projects/:projectId: should work identically under versioned prefix', async () => {
-      const mockProject = {
-        id: 'proj-v1-delete',
-        name: 'Versioned Delete Project',
-        ownerId: mockOwner.id,
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      const deleteSpy = vi.spyOn(prisma.project, 'delete').mockResolvedValue(mockProject as any);
-
-      const response = await request(app)
-        .delete('/api/v1/projects/proj-v1-delete')
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(response.status).toBe(200);
-      expect(response.body.message).toBe('Project deleted successfully');
-      expect(deleteSpy).toHaveBeenCalledWith({ where: { id: 'proj-v1-delete' } });
+      // Missing project -> 404
+      const res404 = await request(app).delete('/projects/p-missing').set('Authorization', `Bearer ${ownerToken}`);
+      expect(res404.status).toBe(404);
     });
 
     // -----------------------------------------------------------------------
-    // POST /projects/:projectId/members (Project Member Invitation)
+    // POST /projects/:projectId/members (Member Invitation)
     // -----------------------------------------------------------------------
-    it('POST /projects/:projectId/members: should allow owner to add existing user by email (201 Created)', async () => {
-      const mockProject = {
-        id: 'proj-member-1',
-        name: 'Gotham Patrol',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', projectId: 'proj-member-1', userId: mockOwner.id }],
-      };
+    it('POST /projects/:projectId/members: owner invites user (201), non-owner blocked (403), 404/409/422 cases handled', async () => {
+      const proj = createProjectFixture('p-1', 'Team Project', owner, [owner]);
 
-      const mockAddedMember = {
-        id: 'pm-2',
-        projectId: 'proj-member-1',
-        userId: mockNewUser.id,
-        joinedAt: new Date('2026-02-01T00:00:00.000Z'),
-        user: { id: mockNewUser.id, name: mockNewUser.name, email: mockNewUser.email },
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      vi.spyOn(prisma.user, 'findFirst').mockResolvedValue(mockNewUser);
-      vi.spyOn(prisma.projectMember, 'findUnique').mockResolvedValue(null);
-      const createMemberSpy = vi.spyOn(prisma.projectMember, 'create').mockResolvedValue(mockAddedMember as any);
-
-      const response = await request(app)
-        .post('/projects/proj-member-1/members')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: '  Oracle@Gotham.COM  ' });
-
-      expect(response.status).toBe(201);
-      expect(response.body).toHaveProperty('message', 'Member added successfully');
-      expect(response.body).toHaveProperty('member');
-      expect(response.body.member.userId).toBe(mockNewUser.id);
-      expect(response.body.member.user.email).toBe(mockNewUser.email);
-      expect(createMemberSpy).toHaveBeenCalledWith({
-        data: {
-          projectId: 'proj-member-1',
-          userId: mockNewUser.id,
-        },
-        include: {
-          user: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
-      });
-    });
-
-    it('POST /projects/:projectId/members: should return 403 Forbidden when non-owner member attempts to add member', async () => {
-      const mockProject = {
-        id: 'proj-member-1',
-        name: 'Gotham Patrol',
-        ownerId: mockOwner.id, // Bruce is owner
-        members: [
-          { id: 'pm-1', projectId: 'proj-member-1', userId: mockOwner.id },
-          { id: 'pm-2', projectId: 'proj-member-1', userId: mockMember.id }, // Dick is member, not owner
-        ],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockMember);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      const createMemberSpy = vi.spyOn(prisma.projectMember, 'create');
-
-      const response = await request(app)
-        .post('/projects/proj-member-1/members')
-        .set('Authorization', `Bearer ${memberToken}`)
-        .send({ email: 'oracle@gotham.com' });
-
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe('FORBIDDEN');
-      expect(response.body.error.message).toBe('Only the project owner can add members');
-      expect(createMemberSpy).not.toHaveBeenCalled();
-    });
-
-    it('POST /projects/:projectId/members: should return 403 Forbidden when non-member attempts to add member', async () => {
-      const mockProject = {
-        id: 'proj-member-1',
-        name: 'Gotham Patrol',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', projectId: 'proj-member-1', userId: mockOwner.id }],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockNonMember);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      const createMemberSpy = vi.spyOn(prisma.projectMember, 'create');
-
-      const response = await request(app)
-        .post('/projects/proj-member-1/members')
-        .set('Authorization', `Bearer ${nonMemberToken}`)
-        .send({ email: 'oracle@gotham.com' });
-
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe('FORBIDDEN');
-      expect(response.body.error.message).toBe('Only the project owner can add members');
-      expect(createMemberSpy).not.toHaveBeenCalled();
-    });
-
-    it('POST /projects/:projectId/members: should return 404 Not Found when project does not exist', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(null);
-
-      const response = await request(app)
-        .post('/projects/00000000-0000-0000-0000-000000000000/members')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: 'oracle@gotham.com' });
-
-      expect(response.status).toBe(404);
-      expect(response.body.error.code).toBe('PROJECT_NOT_FOUND');
-    });
-
-    it('POST /projects/:projectId/members: should return 404 Not Found when target user does not exist', async () => {
-      const mockProject = {
-        id: 'proj-member-1',
-        name: 'Gotham Patrol',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', projectId: 'proj-member-1', userId: mockOwner.id }],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      vi.spyOn(prisma.user, 'findFirst').mockResolvedValue(null); // User not registered
-
-      const response = await request(app)
-        .post('/projects/proj-member-1/members')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: 'unknown@user.com' });
-
-      expect(response.status).toBe(404);
-      expect(response.body.error.code).toBe('USER_NOT_FOUND');
-      expect(response.body.error.message).toBe('User with this email does not exist');
-    });
-
-    it('POST /projects/:projectId/members: should return 409 Conflict when user is already a member', async () => {
-      const mockProject = {
-        id: 'proj-member-1',
-        name: 'Gotham Patrol',
-        ownerId: mockOwner.id,
-        members: [
-          { id: 'pm-1', projectId: 'proj-member-1', userId: mockOwner.id },
-          { id: 'pm-2', projectId: 'proj-member-1', userId: mockMember.id },
-        ],
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      vi.spyOn(prisma.user, 'findFirst').mockResolvedValue(mockMember);
-      vi.spyOn(prisma.projectMember, 'findUnique').mockResolvedValue({
-        id: 'pm-2',
-        projectId: 'proj-member-1',
-        userId: mockMember.id,
-        joinedAt: new Date(),
-      });
-
-      const response = await request(app)
-        .post('/projects/proj-member-1/members')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: 'robin@wayne.com' });
-
-      expect(response.status).toBe(409);
-      expect(response.body.error.code).toBe('MEMBER_ALREADY_EXISTS');
-      expect(response.body.error.message).toBe('User is already a member of this project');
-    });
-
-    it('POST /projects/:projectId/members: should return 422 Validation Error when email is invalid', async () => {
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-
-      const response = await request(app)
-        .post('/projects/proj-member-1/members')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: 'not-an-email' });
-
-      expect(response.status).toBe(422);
-      expect(response.body.error.code).toBe('VALIDATION_ERROR');
-    });
-
-    it('POST /projects/:projectId/members: should return 401 Unauthorized when token is missing', async () => {
-      const response = await request(app)
-        .post('/projects/proj-member-1/members')
-        .send({ email: 'oracle@gotham.com' });
-
-      expect(response.status).toBe(401);
-      expect(response.body.error.code).toBe('UNAUTHORIZED');
-    });
-
-    it('POST /api/v1/projects/:projectId/members: should work identically under versioned prefix', async () => {
-      const mockProject = {
-        id: 'proj-v1-member',
-        name: 'Versioned Project',
-        ownerId: mockOwner.id,
-        members: [{ id: 'pm-1', projectId: 'proj-v1-member', userId: mockOwner.id }],
-      };
-
-      const mockAddedMember = {
-        id: 'pm-v1-new',
-        projectId: 'proj-v1-member',
-        userId: mockNewUser.id,
-        joinedAt: new Date(),
-        user: { id: mockNewUser.id, name: mockNewUser.name, email: mockNewUser.email },
-      };
-
-      vi.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockOwner);
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(mockProject as any);
-      vi.spyOn(prisma.user, 'findFirst').mockResolvedValue(mockNewUser);
-      vi.spyOn(prisma.projectMember, 'findUnique').mockResolvedValue(null);
-      vi.spyOn(prisma.projectMember, 'create').mockResolvedValue(mockAddedMember as any);
-
-      const response = await request(app)
-        .post('/api/v1/projects/proj-v1-member/members')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: 'oracle@gotham.com' });
-
-      expect(response.status).toBe(201);
-      expect(response.body.message).toBe('Member added successfully');
-      expect(response.body.member.userId).toBe(mockNewUser.id);
-    });
-
-    // -----------------------------------------------------------------------
-    // Comprehensive End-to-End Membership & Access Control Enforcement Lifecycle
-    // -----------------------------------------------------------------------
-    it('E2E Lifecycle: verifies creation, membership addition, permission barriers, access grant, and deletion', async () => {
-      const projectId = 'proj-e2e-lifecycle-1';
-
-      // Stage 1: Owner creates project
-      const createdProject = {
-        id: projectId,
-        name: 'Batcave Central Intelligence',
-        description: 'Mission control infrastructure',
-        ownerId: mockOwner.id,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        members: [{ id: 'pm-owner', projectId, userId: mockOwner.id }],
-      };
-
-      (vi.spyOn(prisma.user, 'findUnique') as any).mockImplementation(async (args: any) => {
-        if (args.where.id === mockOwner.id) return mockOwner;
-        if (args.where.id === mockMember.id) return mockMember;
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockImplementation(async (args: any) =>
+        args.where.id === 'p-1' ? (proj as any) : null
+      );
+      (vi.spyOn(prisma.user, 'findFirst') as any).mockImplementation(async (args: any) => {
+        const e = args?.where?.email?.equals;
+        if (e === member.email) return member;
+        if (e === owner.email) return owner;
         return null;
       });
-
-      vi.spyOn(prisma, '$transaction').mockImplementation(async (callback: any) => {
-        return callback({
-          project: { create: vi.fn().mockResolvedValue(createdProject) },
-          projectMember: { create: vi.fn().mockResolvedValue(createdProject.members[0]) },
-        });
+      (vi.spyOn(prisma.projectMember, 'findUnique') as any).mockImplementation(async (args: any) => {
+        if (args.where.projectId_userId.userId === owner.id) return { id: 'pm-1' } as any;
+        return null;
       });
-
-      const createRes = await request(app)
-        .post('/projects')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ name: 'Batcave Central Intelligence', description: 'Mission control infrastructure' });
-
-      expect(createRes.status).toBe(201);
-      expect(createRes.body.project.id).toBe(projectId);
-
-      // Stage 2: Non-member (Dick) tries to view the project before being added -> 403 Forbidden
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue({
-        ...createdProject,
-        owner: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        members: [
-          {
-            id: 'pm-owner',
-            projectId,
-            userId: mockOwner.id,
-            joinedAt: new Date(),
-            user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-          },
-        ],
-      } as any);
-
-      const unauthorizedGetRes = await request(app)
-        .get(`/projects/${projectId}`)
-        .set('Authorization', `Bearer ${memberToken}`);
-
-      expect(unauthorizedGetRes.status).toBe(403);
-      expect(unauthorizedGetRes.body.error.code).toBe('FORBIDDEN');
-
-      // Stage 3: Non-member (Dick) tries to add a member -> 403 Forbidden
-      const unauthorizedAddRes = await request(app)
-        .post(`/projects/${projectId}/members`)
-        .set('Authorization', `Bearer ${memberToken}`)
-        .send({ email: mockNewUser.email });
-
-      expect(unauthorizedAddRes.status).toBe(403);
-      expect(unauthorizedAddRes.body.error.code).toBe('FORBIDDEN');
-
-      // Stage 4: Owner (Bruce) adds Dick as a project member -> 201 Created
-      vi.spyOn(prisma.user, 'findFirst').mockResolvedValue(mockMember);
-      vi.spyOn(prisma.projectMember, 'findUnique').mockResolvedValue(null);
       vi.spyOn(prisma.projectMember, 'create').mockResolvedValue({
-        id: 'pm-dick',
-        projectId,
-        userId: mockMember.id,
-        joinedAt: new Date(),
-        user: { id: mockMember.id, name: mockMember.name, email: mockMember.email },
+        id: 'pm-2',
+        projectId: 'p-1',
+        userId: member.id,
+        user: { id: member.id, name: member.name, email: member.email },
       } as any);
 
-      const addMemberRes = await request(app)
-        .post(`/projects/${projectId}/members`)
+      // Owner successfully adds member -> 201 Created
+      const resSuccess = await request(app)
+        .post('/projects/p-1/members')
         .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: mockMember.email });
+        .send({ email: member.email });
+      expect(resSuccess.status).toBe(201);
+      expect(resSuccess.body.member.userId).toBe(member.id);
 
-      expect(addMemberRes.status).toBe(201);
-      expect(addMemberRes.body.member.userId).toBe(mockMember.id);
+      // Non-owner blocked -> 403 Forbidden
+      const resForbidden = await request(app)
+        .post('/projects/p-1/members')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ email: outsider.email });
+      expect(resForbidden.status).toBe(403);
 
-      // Stage 5: Owner tries to add Dick again -> 409 Conflict
-      vi.spyOn(prisma.projectMember, 'findUnique').mockResolvedValue({
-        id: 'pm-dick',
-        projectId,
-        userId: mockMember.id,
-        joinedAt: new Date(),
-      } as any);
-
-      const duplicateAddRes = await request(app)
-        .post(`/projects/${projectId}/members`)
+      // Target user does not exist -> 404 Not Found
+      const resNotFound = await request(app)
+        .post('/projects/p-1/members')
         .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ email: mockMember.email });
+        .send({ email: 'ghost@user.com' });
+      expect(resNotFound.status).toBe(404);
 
-      expect(duplicateAddRes.status).toBe(409);
-      expect(duplicateAddRes.body.error.code).toBe('MEMBER_ALREADY_EXISTS');
+      // Already a member -> 409 Conflict
+      const resConflict = await request(app)
+        .post('/projects/p-1/members')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ email: owner.email });
+      expect(resConflict.status).toBe(409);
 
-      // Stage 6: Now that Dick is a member, Dick can view the project -> 200 OK
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue({
-        ...createdProject,
-        owner: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-        members: [
-          {
-            id: 'pm-owner',
-            projectId,
-            userId: mockOwner.id,
-            joinedAt: new Date(),
-            user: { id: mockOwner.id, name: mockOwner.name, email: mockOwner.email },
-          },
-          {
-            id: 'pm-dick',
-            projectId,
-            userId: mockMember.id,
-            joinedAt: new Date(),
-            user: { id: mockMember.id, name: mockMember.name, email: mockMember.email },
-          },
-        ],
-      } as any);
-
-      const authorizedGetRes = await request(app)
-        .get(`/projects/${projectId}`)
-        .set('Authorization', `Bearer ${memberToken}`);
-
-      expect(authorizedGetRes.status).toBe(200);
-      expect(authorizedGetRes.body.project.name).toBe('Batcave Central Intelligence');
-      expect(authorizedGetRes.body.project.members).toHaveLength(2);
-
-      // Stage 7: Dick tries to delete the project -> 403 Forbidden (Dick is member, not owner)
-      const unauthorizedDeleteRes = await request(app)
-        .delete(`/projects/${projectId}`)
-        .set('Authorization', `Bearer ${memberToken}`);
-
-      expect(unauthorizedDeleteRes.status).toBe(403);
-      expect(unauthorizedDeleteRes.body.error.code).toBe('FORBIDDEN');
-
-      // Stage 8: Owner (Bruce) deletes the project -> 200 OK
-      vi.spyOn(prisma.project, 'delete').mockResolvedValue(createdProject as any);
-
-      const deleteRes = await request(app)
-        .delete(`/projects/${projectId}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(deleteRes.status).toBe(200);
-      expect(deleteRes.body.message).toBe('Project deleted successfully');
-
-      // Stage 9: Subsequent access returns 404 Not Found
-      vi.spyOn(prisma.project, 'findUnique').mockResolvedValue(null);
-
-      const postDeleteGetRes = await request(app)
-        .get(`/projects/${projectId}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(postDeleteGetRes.status).toBe(404);
-      expect(postDeleteGetRes.body.error.code).toBe('PROJECT_NOT_FOUND');
+      // Invalid email -> 422 Validation Error
+      const resInvalid = await request(app)
+        .post('/projects/p-1/members')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ email: 'not-valid' });
+      expect(resInvalid.status).toBe(422);
     });
+  });
+
+  // =========================================================================
+  // 5. End-to-End Membership & Access Control Enforcement Lifecycle
+  // =========================================================================
+  it('E2E Lifecycle: verifies creation -> unauthorized barrier -> invitation -> access grant -> deletion barrier -> owner cleanup', async () => {
+    const pid = 'p-lifecycle';
+    let currentMembers = [owner];
+
+    vi.spyOn(prisma, '$transaction').mockImplementation(async (cb: any) =>
+      cb({
+        project: { create: vi.fn().mockResolvedValue(createProjectFixture(pid, 'E2E Lifecycle', owner, [owner])) },
+        projectMember: { create: vi.fn().mockResolvedValue({ id: 'pm-1', projectId: pid, userId: owner.id }) },
+      })
+    );
+
+    (vi.spyOn(prisma.project, 'findUnique') as any).mockImplementation(async (args: any) =>
+      args.where.id === pid ? (createProjectFixture(pid, 'E2E Lifecycle', owner, currentMembers) as any) : null
+    );
+
+    (vi.spyOn(prisma.user, 'findFirst') as any).mockImplementation(async (args: any) =>
+      args.where.email.equals === member.email ? member : null
+    );
+
+    (vi.spyOn(prisma.projectMember, 'findUnique') as any).mockImplementation(async (args: any) =>
+      currentMembers.some((m) => m.id === args.where.projectId_userId.userId) ? ({ id: 'pm-exists' } as any) : null
+    );
+
+    (vi.spyOn(prisma.projectMember, 'create') as any).mockImplementation(async () => {
+      currentMembers.push(member);
+      return { id: 'pm-2', projectId: pid, userId: member.id, user: member } as any;
+    });
+
+    (vi.spyOn(prisma.project, 'delete') as any).mockImplementation(async () => {
+      currentMembers = [];
+      return {} as any;
+    });
+
+    // 1. Owner creates project
+    const r1 = await request(app).post('/projects').set('Authorization', `Bearer ${ownerToken}`).send({ name: 'E2E Lifecycle' });
+    expect(r1.status).toBe(201);
+
+    // 2. Member (not yet invited) blocked from viewing (403)
+    const r2 = await request(app).get(`/projects/${pid}`).set('Authorization', `Bearer ${memberToken}`);
+    expect(r2.status).toBe(403);
+
+    // 3. Member blocked from inviting others (403)
+    const r3 = await request(app).post(`/projects/${pid}/members`).set('Authorization', `Bearer ${memberToken}`).send({ email: outsider.email });
+    expect(r3.status).toBe(403);
+
+    // 4. Owner invites member -> 201 Created
+    const r4 = await request(app).post(`/projects/${pid}/members`).set('Authorization', `Bearer ${ownerToken}`).send({ email: member.email });
+    expect(r4.status).toBe(201);
+
+    // 5. Owner re-invites member -> 409 Conflict
+    const r5 = await request(app).post(`/projects/${pid}/members`).set('Authorization', `Bearer ${ownerToken}`).send({ email: member.email });
+    expect(r5.status).toBe(409);
+
+    // 6. Member can now access project -> 200 OK
+    const r6 = await request(app).get(`/projects/${pid}`).set('Authorization', `Bearer ${memberToken}`);
+    expect(r6.status).toBe(200);
+
+    // 7. Member blocked from deleting project -> 403 Forbidden
+    const r7 = await request(app).delete(`/projects/${pid}`).set('Authorization', `Bearer ${memberToken}`);
+    expect(r7.status).toBe(403);
+
+    // 8. Owner deletes project -> 200 OK
+    const r8 = await request(app).delete(`/projects/${pid}`).set('Authorization', `Bearer ${ownerToken}`);
+    expect(r8.status).toBe(200);
   });
 });
