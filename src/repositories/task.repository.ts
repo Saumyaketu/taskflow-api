@@ -13,6 +13,16 @@ export interface CreateTaskRepoData {
   completedAt?: Date | null;
 }
 
+export interface UpdateTaskRepoData {
+  title?: string;
+  description?: string | null;
+  priority?: Priority;
+  status?: TaskStatus;
+  assigneeId?: string | null;
+  dueDate?: Date | null;
+  completedAt?: Date | null;
+}
+
 export type TaskWithDetails = Task & {
   creator: {
     id: string;
@@ -94,5 +104,41 @@ export class TaskRepository {
       }
       throw err;
     }
+  }
+
+  /**
+   * Updates an existing task by ID with partial fields.
+   */
+  async update(taskId: string, data: UpdateTaskRepoData): Promise<TaskWithDetails> {
+    const updatePayload: Record<string, any> = {};
+
+    if (data.title !== undefined) updatePayload.title = data.title;
+    if (data.description !== undefined) updatePayload.description = data.description;
+    if (data.priority !== undefined) updatePayload.priority = data.priority;
+    if (data.status !== undefined) updatePayload.status = data.status;
+    if (data.assigneeId !== undefined) updatePayload.assigneeId = data.assigneeId;
+    if (data.dueDate !== undefined) updatePayload.dueDate = data.dueDate;
+    if (data.completedAt !== undefined) updatePayload.completedAt = data.completedAt;
+
+    return this.db.task.update({
+      where: { id: taskId },
+      data: updatePayload,
+      include: {
+        creator: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        assignee: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
   }
 }

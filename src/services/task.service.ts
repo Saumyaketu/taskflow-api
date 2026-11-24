@@ -1,7 +1,7 @@
 import { TaskStatus } from '@prisma/client';
 import { TaskRepository, TaskWithDetails } from '../repositories/task.repository.js';
 import { ProjectRepository } from '../repositories/project.repository.js';
-import { CreateTaskInput } from '../schemas/task.schema.js';
+import { CreateTaskInput, UpdateTaskInput } from '../schemas/task.schema.js';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../errors/AppError.js';
 
 export class TaskService {
@@ -60,6 +60,79 @@ export class TaskService {
     return this.taskRepository.create({
       projectId,
       creatorId: creatorUserId,
+      title: input.title,
+      description: input.description,
+      priority: input.priority,
+      status: input.status,
+      assigneeId: input.assigneeId,
+      dueDate: input.dueDate,
+      completedAt,
+    });
+  }
+
+  /**
+   * Partially updates an existing task.
+   *
+   * Business Rules:
+   * 1. Task must exist (404 Not Found if missing).
+   * 2. Caller must be an active member or owner of the task's project (403 Forbidden if non-member).
+   * 3. If an assignee is updated to a non-null user, the assignee must be a member of the project (400 Bad Request).
+   * 4. Lifecycle rule: If status changes to DONE, set completedAt = now(). If reopened (TODO / IN_PROGRESS), clear completedAt = null.
+   * 5. Automatically maintains updatedAt timestamp.
+   */
+  async updateTask(
+    userId: string,
+    taskId: string,
+    input: UpdateTaskInput
+  ): Promise<TaskWithDetails> {
+    // 1. Verify task existence
+    const existingTask = await this.taskRepository.findById(taskId);
+    if (!existingTask) {
+      throw new NotFoundError('Task not found', 'TASK_NOT_FOUND');
+    }
+
+    // 2. Verify project existence and caller authorization
+    const project = await this.projectRepository.findById(existingTask.projectId);
+    if (!project) {
+      throw new NotFoundError('Project not found', 'PROJECT_NOT_FOUND');
+    }
+
+    const isMember =
+      project.ownerId === userId ||
+      project.members.some((member) => member.userId === userId);
+
+    if (!isMember) {
+      throw new ForbiddenError('You do not have access to modify tasks in this project', 'FORBIDDEN');
+    }
+
+    // 3. Verify assignee membership if assignee is being assigned/updated
+    if (input.assigneeId) {
+      const isAssigneeMember =
+        project.ownerId === input.assigneeId ||
+        project.members.some((member) => member.userId === input.assigneeId);
+
+      if (!isAssigneeMember) {
+        throw new BadRequestError(
+          'Assignee must be a member of the project',
+          'INVALID_ASSIGNEE'
+        );
+      }
+    }
+
+    // 4. Dynamic completion lifecycle
+    let completedAt: Date | null | undefined = undefined;
+    if (input.status !== undefined) {
+      if (input.status === TaskStatus.DONE) {
+        completedAt = existingTask.status === TaskStatus.DONE
+          ? existingTask.completedAt ?? new Date()
+          : new Date();
+      } else {
+        completedAt = null;
+      }
+    }
+
+    // 5. Update task
+    return this.taskRepository.update(taskId, {
       title: input.title,
       description: input.description,
       priority: input.priority,

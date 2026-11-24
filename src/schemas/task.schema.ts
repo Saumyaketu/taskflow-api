@@ -72,6 +72,78 @@ export const createTaskSchema = z
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 
 /**
+ * Validation schema for partial task updates (PATCH /tasks/:taskId).
+ * Allows partial modifications to title, description, priority, status, assignee, and dueDate.
+ */
+export const updateTaskSchema = z
+  .object({
+    title: z
+      .string('Task title must be a string')
+      .trim()
+      .min(1, 'Task title cannot be blank after trimming')
+      .max(255, 'Task title cannot exceed 255 characters')
+      .optional(),
+    description: z
+      .string('Description must be a string')
+      .trim()
+      .max(2000, 'Description cannot exceed 2000 characters')
+      .optional()
+      .nullable(),
+    priority: z
+      .enum(['LOW', 'MEDIUM', 'HIGH'], {
+        message: 'Priority must be one of: LOW, MEDIUM, HIGH',
+      })
+      .optional(),
+    status: z
+      .enum(['TODO', 'IN_PROGRESS', 'DONE'], {
+        message: 'Status must be one of: TODO, IN_PROGRESS, DONE',
+      })
+      .optional(),
+    assigneeId: z.string().trim().min(1, 'assigneeId cannot be empty').optional().nullable(),
+    assignee_id: z.string().trim().min(1, 'assignee_id cannot be empty').optional().nullable(),
+    dueDate: iso8601DateSchema.optional().nullable(),
+    due_date: iso8601DateSchema.optional().nullable(),
+  })
+  .transform((data) => {
+    const result: {
+      title?: string;
+      description?: string | null;
+      priority?: Priority;
+      status?: TaskStatus;
+      assigneeId?: string | null;
+      dueDate?: Date | null;
+    } = {};
+
+    if (data.title !== undefined) {
+      result.title = data.title.trim();
+    }
+    if (data.description !== undefined) {
+      result.description =
+        data.description && data.description.trim().length > 0 ? data.description.trim() : null;
+    }
+    if (data.priority !== undefined) {
+      result.priority = data.priority as Priority;
+    }
+    if (data.status !== undefined) {
+      result.status = data.status as TaskStatus;
+    }
+
+    const rawAssignee = data.assigneeId !== undefined ? data.assigneeId : data.assignee_id;
+    if (rawAssignee !== undefined) {
+      result.assigneeId = rawAssignee && rawAssignee.trim().length > 0 ? rawAssignee.trim() : null;
+    }
+
+    const rawDueDate = data.dueDate !== undefined ? data.dueDate : data.due_date;
+    if (rawDueDate !== undefined) {
+      result.dueDate = rawDueDate ? new Date(rawDueDate) : null;
+    }
+
+    return result;
+  });
+
+export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
+
+/**
  * Validation schema for route parameters containing taskId (e.g. /tasks/:taskId)
  */
 export const taskIdParamSchema = z.object({

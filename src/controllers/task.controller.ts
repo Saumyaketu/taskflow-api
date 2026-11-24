@@ -24,4 +24,24 @@ export class TaskController {
       task,
     });
   });
+
+  /**
+   * Handles partial task update (PATCH /tasks/:taskId)
+   * Accessible to project members/owner.
+   * Responds with 200 OK and updated task details.
+   */
+  update = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const user = req.user;
+    if (!user) {
+      throw new UnauthorizedError('Authentication token is required', 'UNAUTHORIZED');
+    }
+
+    const taskId = String(req.params.taskId);
+    const task = await this.taskService.updateTask(user.id, taskId, req.body);
+
+    res.status(200).json({
+      message: 'Task updated successfully',
+      task,
+    });
+  });
 }

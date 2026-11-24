@@ -5,6 +5,7 @@ import { prisma } from '../src/config/database.js';
 import { generateToken } from '../src/utils/jwt.js';
 import {
   createTaskSchema,
+  updateTaskSchema,
   iso8601DateSchema,
   taskIdParamSchema,
 } from '../src/schemas/task.schema.js';
@@ -166,6 +167,36 @@ describe('Task Management Engine - Task Creation', () => {
         })
       ).toThrow(/due_date must be a valid ISO-8601/);
     });
+
+    it('updateTaskSchema: accepts partial updates and normalizes aliases', () => {
+      const p1 = updateTaskSchema.parse({ title: '  Updated Title  ' });
+      expect(p1).toEqual({ title: 'Updated Title' });
+
+      const p2 = updateTaskSchema.parse({});
+      expect(p2).toEqual({});
+
+      const p3 = updateTaskSchema.parse({
+        priority: 'LOW',
+        status: 'DONE',
+        assignee_id: member.id,
+        due_date: '2026-12-31T20:00:00.000Z',
+      });
+      expect(p3.priority).toBe(Priority.LOW);
+      expect(p3.status).toBe(TaskStatus.DONE);
+      expect(p3.assigneeId).toBe(member.id);
+      expect(p3.dueDate).toBeInstanceOf(Date);
+    });
+
+    it('updateTaskSchema: rejects empty or blank title when provided', () => {
+      expect(() => updateTaskSchema.parse({ title: '' })).toThrow(/cannot be blank/);
+      expect(() => updateTaskSchema.parse({ title: '   ' })).toThrow(/cannot be blank/);
+    });
+
+    it('updateTaskSchema: rejects invalid priority, status, and due_date format', () => {
+      expect(() => updateTaskSchema.parse({ priority: 'INVALID' })).toThrow(/LOW.*MEDIUM.*HIGH/);
+      expect(() => updateTaskSchema.parse({ status: 'INVALID' })).toThrow(/TODO.*IN_PROGRESS.*DONE/);
+      expect(() => updateTaskSchema.parse({ due_date: 'invalid-date' })).toThrow(/due_date must be a valid ISO-8601/);
+    });
   });
 
   // =========================================================================
@@ -222,6 +253,27 @@ describe('Task Management Engine - Task Creation', () => {
 
       const invalid = await repo.findById('not-a-uuid');
       expect(invalid).toBeNull();
+    });
+
+    it('update: delegates to Prisma task.update with provided partial fields and relations', async () => {
+      const updatedMock = createTaskFixture({ title: 'Updated Name', status: TaskStatus.DONE });
+      const mockDb = {
+        task: {
+          update: vi.fn().mockResolvedValue(updatedMock),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      const res = await repo.update('t-1', { title: 'Updated Name', status: TaskStatus.DONE });
+
+      expect(mockDb.task.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 't-1' },
+          data: { title: 'Updated Name', status: TaskStatus.DONE },
+        })
+      );
+      expect(res.title).toBe('Updated Name');
+      expect(res.status).toBe(TaskStatus.DONE);
     });
   });
 
@@ -330,6 +382,142 @@ describe('Task Management Engine - Task Creation', () => {
         })
       ).rejects.toThrow(BadRequestError);
       expect(mockTaskRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('updateTask: successfully updates task fields for project member', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existing = createTaskFixture({ status: TaskStatus.TODO, completedAt: null });
+      const mockProjectRepo = {
+        findById: vi.fn().mockResolvedValue(proj),
+      } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(existing),
+        update: vi.fn().mockImplementation(async (_id, data) => createTaskFixture({ ...existing, ...data })),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      const res = await service.updateTask(member.id, 't-1', {
+        title: 'New Title',
+        priority: Priority.LOW,
+      });
+
+      expect(res.title).toBe('New Title');
+      expect(res.priority).toBe(Priority.LOW);
+    });
+
+    it('updateTask: rejects if task does not exist (404 Not Found)', async () => {
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(null),
+        update: vi.fn(),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo);
+      await expect(service.updateTask(member.id, 't-missing', { title: 'New' })).rejects.toThrow(NotFoundError);
+      expect(mockTaskRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('updateTask: rejects if caller is not a member of the task project (403 Forbidden)', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existing = createTaskFixture({ projectId: 'p-1' });
+      const mockProjectRepo = {
+        findById: vi.fn().mockResolvedValue(proj),
+      } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(existing),
+        update: vi.fn(),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await expect(service.updateTask(outsider.id, 't-1', { title: 'New' })).rejects.toThrow(ForbiddenError);
+      expect(mockTaskRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('updateTask: rejects if new assignee is not a member of the project (400 Bad Request)', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existing = createTaskFixture({ projectId: 'p-1' });
+      const mockProjectRepo = {
+        findById: vi.fn().mockResolvedValue(proj),
+      } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(existing),
+        update: vi.fn(),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await expect(
+        service.updateTask(member.id, 't-1', { assigneeId: outsider.id })
+      ).rejects.toThrow(BadRequestError);
+      expect(mockTaskRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('updateTask: completion lifecycle - sets completedAt when status changes to DONE', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existing = createTaskFixture({ status: TaskStatus.TODO, completedAt: null });
+      const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(existing),
+        update: vi.fn().mockImplementation(async (_id, data) => createTaskFixture({ ...existing, ...data })),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await service.updateTask(member.id, 't-1', { status: TaskStatus.DONE });
+
+      expect(mockTaskRepo.update).toHaveBeenCalledWith(
+        't-1',
+        expect.objectContaining({
+          status: TaskStatus.DONE,
+          completedAt: expect.any(Date),
+        })
+      );
+    });
+
+    it('updateTask: completion lifecycle - clears completedAt to null when task is reopened', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existing = createTaskFixture({
+        status: TaskStatus.DONE,
+        completedAt: new Date('2026-06-01T00:00:00.000Z'),
+      });
+      const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(existing),
+        update: vi.fn().mockImplementation(async (_id, data) => createTaskFixture({ ...existing, ...data })),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await service.updateTask(member.id, 't-1', { status: TaskStatus.IN_PROGRESS });
+
+      expect(mockTaskRepo.update).toHaveBeenCalledWith(
+        't-1',
+        expect.objectContaining({
+          status: TaskStatus.IN_PROGRESS,
+          completedAt: null,
+        })
+      );
+    });
+
+    it('updateTask: retains existing completedAt when updating other fields without changing DONE status', async () => {
+      const existingCompletedAt = new Date('2026-06-01T00:00:00.000Z');
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existing = createTaskFixture({
+        status: TaskStatus.DONE,
+        completedAt: existingCompletedAt,
+      });
+      const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(existing),
+        update: vi.fn().mockImplementation(async (_id, data) => createTaskFixture({ ...existing, ...data })),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await service.updateTask(member.id, 't-1', { title: 'Updated Title Only' });
+
+      expect(mockTaskRepo.update).toHaveBeenCalledWith(
+        't-1',
+        expect.objectContaining({
+          title: 'Updated Title Only',
+          completedAt: undefined,
+        })
+      );
     });
   });
 
@@ -484,6 +672,178 @@ describe('Task Management Engine - Task Creation', () => {
       expect(res.body.message).toBe('Task created successfully');
       expect(res.body.task.priority).toBe('HIGH');
       expect(res.body.task.status).toBe('IN_PROGRESS');
+      expect(res.body.task.assigneeId).toBe(owner.id);
+    });
+  });
+
+  // =========================================================================
+  // 5. HTTP Integration Tests (PATCH /tasks/:taskId)
+  // =========================================================================
+  describe('PATCH /tasks/:taskId HTTP Integration', () => {
+    it('returns 401 Unauthorized when request lacks authentication token', async () => {
+      const res = await request(app)
+        .patch('/tasks/t-1')
+        .send({ title: 'Unauthorized Update' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('returns 404 Not Found when task does not exist', async () => {
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(null);
+
+      const res = await request(app)
+        .patch('/tasks/t-missing')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: 'New Title' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('TASK_NOT_FOUND');
+    });
+
+    it('returns 403 Forbidden when caller is not a member of the project', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ projectId: 'p-1' });
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      const res = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${outsiderToken}`)
+        .send({ title: 'Intruder Update' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('returns 422 Unprocessable Entity when title is blank or fields are invalid', async () => {
+      const res1 = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: '   ' });
+      expect(res1.status).toBe(422);
+
+      const res2 = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ priority: 'INVALID_PRIORITY' });
+      expect(res2.status).toBe(422);
+
+      const res3 = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ status: 'INVALID_STATUS' });
+      expect(res3.status).toBe(422);
+
+      const res4 = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ due_date: 'invalid-date' });
+      expect(res4.status).toBe(422);
+    });
+
+    it('returns 400 Bad Request when assignee is not a member of the project', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ projectId: 'p-1' });
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      const res = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ assignee_id: outsider.id });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_ASSIGNEE');
+    });
+
+    it('returns 200 OK and sets completedAt when status is updated to DONE', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existingTask = createTaskFixture({
+        id: 't-1',
+        projectId: 'p-1',
+        status: TaskStatus.TODO,
+        completedAt: null,
+      });
+      const updatedTask = createTaskFixture({
+        id: 't-1',
+        projectId: 'p-1',
+        status: TaskStatus.DONE,
+        completedAt: new Date('2026-11-24T12:00:00.000Z'),
+      });
+
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(existingTask);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(updatedTask);
+
+      const res = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ status: 'DONE' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe('Task updated successfully');
+      expect(res.body.task.status).toBe(TaskStatus.DONE);
+      expect(res.body.task.completedAt).not.toBeNull();
+    });
+
+    it('returns 200 OK and clears completedAt when task is reopened to IN_PROGRESS', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existingTask = createTaskFixture({
+        id: 't-1',
+        projectId: 'p-1',
+        status: TaskStatus.DONE,
+        completedAt: new Date('2026-11-24T10:00:00.000Z'),
+      });
+      const reopenedTask = createTaskFixture({
+        id: 't-1',
+        projectId: 'p-1',
+        status: TaskStatus.IN_PROGRESS,
+        completedAt: null,
+      });
+
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(existingTask);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(reopenedTask);
+
+      const res = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ status: 'IN_PROGRESS' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe('Task updated successfully');
+      expect(res.body.task.status).toBe(TaskStatus.IN_PROGRESS);
+      expect(res.body.task.completedAt).toBeNull();
+    });
+
+    it('returns 200 OK when member updates multiple fields simultaneously', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const existingTask = createTaskFixture({ id: 't-1', projectId: 'p-1' });
+      const updatedTask = createTaskFixture({
+        id: 't-1',
+        title: 'Refactored Pipeline',
+        priority: Priority.LOW,
+        assigneeId: owner.id,
+      });
+
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(existingTask);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(updatedTask);
+
+      const res = await request(app)
+        .patch('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({
+          title: 'Refactored Pipeline',
+          priority: 'LOW',
+          assignee_id: owner.id,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe('Task updated successfully');
+      expect(res.body.task.title).toBe('Refactored Pipeline');
+      expect(res.body.task.priority).toBe(Priority.LOW);
       expect(res.body.task.assigneeId).toBe(owner.id);
     });
   });
