@@ -57,6 +57,14 @@ export interface PaginatedTasksResult {
   totalPages: number;
 }
 
+export interface ProjectTaskSummary {
+  totalTasks: number;
+  byStatus: Record<TaskStatus, number>;
+  byPriority: Record<Priority, number>;
+  overdueTasks: number;
+}
+
+
 
 export class TaskRepository {
   constructor(private readonly db: PrismaClient = defaultPrisma) {}
@@ -241,6 +249,83 @@ export class TaskRepository {
       page,
       limit,
       totalPages,
+    };
+  }
+
+  /**
+   * Aggregates task distribution metrics for a project:
+   * - Total tasks count
+   * - Counts grouped by status (TODO, IN_PROGRESS, DONE)
+   * - Counts grouped by priority (LOW, MEDIUM, HIGH)
+   * - Overdue tasks count (incomplete tasks with dueDate in the past)
+   */
+  async getProjectSummary(projectId: string): Promise<ProjectTaskSummary> {
+    const now = new Date();
+
+    const [totalTasks, statusGroups, priorityGroups, overdueTasks] = await Promise.all([
+      this.db.task.count({
+        where: { projectId },
+      }),
+      this.db.task.groupBy({
+        by: ['status'],
+        where: { projectId },
+        _count: {
+          _all: true,
+        },
+      }),
+      this.db.task.groupBy({
+        by: ['priority'],
+        where: { projectId },
+        _count: {
+          _all: true,
+        },
+      }),
+      this.db.task.count({
+        where: {
+          projectId,
+          status: { in: [TaskStatus.TODO, TaskStatus.IN_PROGRESS] },
+          dueDate: { lt: now },
+        },
+      }),
+    ]);
+
+    const byStatus: Record<TaskStatus, number> = {
+      [TaskStatus.TODO]: 0,
+      [TaskStatus.IN_PROGRESS]: 0,
+      [TaskStatus.DONE]: 0,
+    };
+
+    const byPriority: Record<Priority, number> = {
+      [Priority.LOW]: 0,
+      [Priority.MEDIUM]: 0,
+      [Priority.HIGH]: 0,
+    };
+
+    const extractCount = (countObj: any): number => {
+      if (typeof countObj === 'number') return countObj;
+      if (countObj && typeof countObj === 'object') {
+        return countObj._all ?? countObj.id ?? countObj.status ?? countObj.priority ?? 0;
+      }
+      return 0;
+    };
+
+    for (const group of statusGroups) {
+      if (group.status in byStatus) {
+        byStatus[group.status as TaskStatus] = extractCount(group._count);
+      }
+    }
+
+    for (const group of priorityGroups) {
+      if (group.priority in byPriority) {
+        byPriority[group.priority as Priority] = extractCount(group._count);
+      }
+    }
+
+    return {
+      totalTasks,
+      byStatus,
+      byPriority,
+      overdueTasks,
     };
   }
 }

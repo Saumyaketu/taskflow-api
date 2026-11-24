@@ -81,6 +81,17 @@ export const createProjectRouter = (
     taskController.listByProject
   );
 
+  /**
+   * @route GET /projects/:projectId/summary
+   * @desc Retrieve project task analytics and distribution metrics (members only)
+   * @access Protected (Members only)
+   */
+  router.get(
+    '/:projectId/summary',
+    validate({ params: projectIdParamSchema }),
+    taskController.getProjectSummary
+  );
+
   return router;
 };
 

@@ -621,6 +621,96 @@ describe('Task Management Engine & Lifecycle Suite', () => {
         })
       );
     });
+
+    // getProjectSummary Repository Unit Tests
+    it('getProjectSummary: aggregates total tasks, status groups, priority groups, and overdue tasks', async () => {
+      const mockDb = {
+        task: {
+          count: vi
+            .fn()
+            .mockResolvedValueOnce(6) // totalTasks
+            .mockResolvedValueOnce(2), // overdueTasks
+          groupBy: vi
+            .fn()
+            .mockResolvedValueOnce([
+              { status: TaskStatus.TODO, _count: { _all: 2 } },
+              { status: TaskStatus.IN_PROGRESS, _count: { _all: 3 } },
+              { status: TaskStatus.DONE, _count: { _all: 1 } },
+            ])
+            .mockResolvedValueOnce([
+              { priority: Priority.LOW, _count: { _all: 1 } },
+              { priority: Priority.MEDIUM, _count: { _all: 3 } },
+              { priority: Priority.HIGH, _count: { _all: 2 } },
+            ]),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      const summary = await repo.getProjectSummary('p-1');
+
+      expect(mockDb.task.count).toHaveBeenNthCalledWith(1, {
+        where: { projectId: 'p-1' },
+      });
+      expect(mockDb.task.groupBy).toHaveBeenNthCalledWith(1, {
+        by: ['status'],
+        where: { projectId: 'p-1' },
+        _count: { _all: true },
+      });
+      expect(mockDb.task.groupBy).toHaveBeenNthCalledWith(2, {
+        by: ['priority'],
+        where: { projectId: 'p-1' },
+        _count: { _all: true },
+      });
+      expect(mockDb.task.count).toHaveBeenNthCalledWith(2, {
+        where: {
+          projectId: 'p-1',
+          status: { in: [TaskStatus.TODO, TaskStatus.IN_PROGRESS] },
+          dueDate: { lt: expect.any(Date) },
+        },
+      });
+
+      expect(summary).toEqual({
+        totalTasks: 6,
+        byStatus: {
+          TODO: 2,
+          IN_PROGRESS: 3,
+          DONE: 1,
+        },
+        byPriority: {
+          LOW: 1,
+          MEDIUM: 3,
+          HIGH: 2,
+        },
+        overdueTasks: 2,
+      });
+    });
+
+    it('getProjectSummary: handles 0 tasks gracefully returning 0 for all status and priority buckets and 0 overdue', async () => {
+      const mockDb = {
+        task: {
+          count: vi.fn().mockResolvedValue(0),
+          groupBy: vi.fn().mockResolvedValue([]),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      const summary = await repo.getProjectSummary('p-empty');
+
+      expect(summary).toEqual({
+        totalTasks: 0,
+        byStatus: {
+          TODO: 0,
+          IN_PROGRESS: 0,
+          DONE: 0,
+        },
+        byPriority: {
+          LOW: 0,
+          MEDIUM: 0,
+          HIGH: 0,
+        },
+        overdueTasks: 0,
+      });
+    });
   });
 
   // =========================================================================
@@ -1063,6 +1153,60 @@ describe('Task Management Engine & Lifecycle Suite', () => {
         ).rejects.toThrow(NotFoundError);
 
         expect(mockTaskRepo.findProjectTasks).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('getProjectSummary', () => {
+      const mockSummary = {
+        totalTasks: 5,
+        byStatus: { TODO: 2, IN_PROGRESS: 2, DONE: 1 },
+        byPriority: { LOW: 1, MEDIUM: 3, HIGH: 1 },
+        overdueTasks: 1,
+      };
+
+      it('allows project owner to retrieve project summary', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+        const mockTaskRepo = { getProjectSummary: vi.fn().mockResolvedValue(mockSummary) } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        const result = await service.getProjectSummary(owner.id, 'p-1');
+
+        expect(mockTaskRepo.getProjectSummary).toHaveBeenCalledWith('p-1');
+        expect(result).toEqual(mockSummary);
+      });
+
+      it('allows project member to retrieve project summary', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+        const mockTaskRepo = { getProjectSummary: vi.fn().mockResolvedValue(mockSummary) } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        const result = await service.getProjectSummary(member.id, 'p-1');
+
+        expect(mockTaskRepo.getProjectSummary).toHaveBeenCalledWith('p-1');
+        expect(result).toEqual(mockSummary);
+      });
+
+      it('rejects non-member outsider with 403 Forbidden', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+        const mockTaskRepo = { getProjectSummary: vi.fn() } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        await expect(service.getProjectSummary(outsider.id, 'p-1')).rejects.toThrow(ForbiddenError);
+
+        expect(mockTaskRepo.getProjectSummary).not.toHaveBeenCalled();
+      });
+
+      it('rejects with 404 Not Found when project does not exist', async () => {
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(null) } as any;
+        const mockTaskRepo = { getProjectSummary: vi.fn() } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        await expect(service.getProjectSummary(member.id, 'p-missing')).rejects.toThrow(NotFoundError);
+
+        expect(mockTaskRepo.getProjectSummary).not.toHaveBeenCalled();
       });
     });
   });
@@ -2438,6 +2582,177 @@ describe('Task Management Engine & Lifecycle Suite', () => {
           }),
         })
       );
+    });
+  });
+
+  // =========================================================================
+  // 10. Project Task Analytics & Summary Endpoint
+  // =========================================================================
+  describe('Project Task Analytics & Summary Endpoint (GET /projects/:projectId/summary)', () => {
+    const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+
+    it('returns 401 Unauthorized when request lacks authentication token', async () => {
+      const res = await request(app).get('/projects/p-1/summary');
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('returns 401 Unauthorized when authentication token is invalid', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/summary')
+        .set('Authorization', 'Bearer invalid-token');
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('INVALID_TOKEN');
+    });
+
+    it('returns 404 Not Found when target project does not exist', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(null);
+
+      const res = await request(app)
+        .get('/projects/p-missing/summary')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('PROJECT_NOT_FOUND');
+    });
+
+    it('returns 403 Forbidden when caller is not a member or owner of the project', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      const res = await request(app)
+        .get('/projects/p-1/summary')
+        .set('Authorization', `Bearer ${outsiderToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('returns 200 OK and aggregates accurate task distribution and overdue metrics for owner', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      // Mock database counts and groupings
+      (vi.spyOn(prisma.task, 'count') as any)
+        .mockResolvedValueOnce(6) // total tasks
+        .mockResolvedValueOnce(2); // overdue tasks
+
+      (vi.spyOn(prisma.task, 'groupBy') as any)
+        .mockResolvedValueOnce([
+          { status: TaskStatus.TODO, _count: { _all: 2 } },
+          { status: TaskStatus.IN_PROGRESS, _count: { _all: 3 } },
+          { status: TaskStatus.DONE, _count: { _all: 1 } },
+        ])
+        .mockResolvedValueOnce([
+          { priority: Priority.LOW, _count: { _all: 1 } },
+          { priority: Priority.MEDIUM, _count: { _all: 3 } },
+          { priority: Priority.HIGH, _count: { _all: 2 } },
+        ]);
+
+      const res = await request(app)
+        .get('/projects/p-1/summary')
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.totalTasks).toBe(6);
+      expect(res.body.total).toBe(6);
+      expect(res.body.byStatus).toEqual({
+        TODO: 2,
+        IN_PROGRESS: 3,
+        DONE: 1,
+      });
+      expect(res.body.byPriority).toEqual({
+        LOW: 1,
+        MEDIUM: 3,
+        HIGH: 2,
+      });
+      expect(res.body.overdueTasks).toBe(2);
+      expect(res.body.overdue).toBe(2);
+
+      // Verify nested summary object is also provided for convenience
+      expect(res.body.summary).toEqual({
+        totalTasks: 6,
+        byStatus: {
+          TODO: 2,
+          IN_PROGRESS: 3,
+          DONE: 1,
+        },
+        byPriority: {
+          LOW: 1,
+          MEDIUM: 3,
+          HIGH: 2,
+        },
+        overdueTasks: 2,
+      });
+    });
+
+    it('returns 200 OK for project member', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      (vi.spyOn(prisma.task, 'count') as any)
+        .mockResolvedValueOnce(3)
+        .mockResolvedValueOnce(0);
+
+      (vi.spyOn(prisma.task, 'groupBy') as any)
+        .mockResolvedValueOnce([
+          { status: TaskStatus.TODO, _count: { _all: 3 } },
+        ])
+        .mockResolvedValueOnce([
+          { priority: Priority.MEDIUM, _count: { _all: 3 } },
+        ]);
+
+      const res = await request(app)
+        .get('/projects/p-1/summary')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.totalTasks).toBe(3);
+      expect(res.body.byStatus.TODO).toBe(3);
+      expect(res.body.byStatus.IN_PROGRESS).toBe(0);
+      expect(res.body.byStatus.DONE).toBe(0);
+      expect(res.body.byPriority.MEDIUM).toBe(3);
+      expect(res.body.byPriority.LOW).toBe(0);
+      expect(res.body.byPriority.HIGH).toBe(0);
+      expect(res.body.overdueTasks).toBe(0);
+    });
+
+    it('returns 200 OK with zero metrics when project has no tasks', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(0);
+      (vi.spyOn(prisma.task, 'groupBy') as any).mockResolvedValue([]);
+
+      const res = await request(app)
+        .get('/projects/p-1/summary')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.totalTasks).toBe(0);
+      expect(res.body.byStatus).toEqual({
+        TODO: 0,
+        IN_PROGRESS: 0,
+        DONE: 0,
+      });
+      expect(res.body.byPriority).toEqual({
+        LOW: 0,
+        MEDIUM: 0,
+        HIGH: 0,
+      });
+      expect(res.body.overdueTasks).toBe(0);
+    });
+
+    it('supports versioned route /api/v1/projects/:projectId/summary', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(0);
+      (vi.spyOn(prisma.task, 'groupBy') as any).mockResolvedValue([]);
+
+      const res = await request(app)
+        .get('/api/v1/projects/p-1/summary')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.totalTasks).toBe(0);
     });
   });
 });

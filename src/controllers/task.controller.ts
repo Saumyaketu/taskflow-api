@@ -105,4 +105,29 @@ export class TaskController {
       totalPages: result.totalPages,
     });
   });
+
+  /**
+   * Handles retrieving project task distribution analytics and summary metrics (GET /projects/:projectId/summary)
+   * Accessible only to project members and owner.
+   * Responds with 200 OK and distribution metrics (total, byStatus, byPriority, overdueTasks).
+   */
+  getProjectSummary = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const user = req.user;
+    if (!user) {
+      throw new UnauthorizedError('Authentication token is required', 'UNAUTHORIZED');
+    }
+
+    const projectId = String(req.params.projectId);
+    const summary = await this.taskService.getProjectSummary(user.id, projectId);
+
+    res.status(200).json({
+      summary,
+      totalTasks: summary.totalTasks,
+      total: summary.totalTasks,
+      byStatus: summary.byStatus,
+      byPriority: summary.byPriority,
+      overdueTasks: summary.overdueTasks,
+      overdue: summary.overdueTasks,
+    });
+  });
 }

@@ -4,6 +4,7 @@ import {
   TaskWithDetails,
   PaginatedTasksResult,
   FindProjectTasksOptions,
+  ProjectTaskSummary,
 } from '../repositories/task.repository.js';
 import { ProjectRepository } from '../repositories/project.repository.js';
 import { CreateTaskInput, UpdateTaskInput } from '../schemas/task.schema.js';
@@ -221,5 +222,36 @@ export class TaskService {
       projectId,
       ...options,
     });
+  }
+
+  /**
+   * Retrieves analytics and task distribution metrics for a project.
+   *
+   * Business Rules:
+   * 1. Project must exist (404 Not Found if missing).
+   * 2. Caller must be an active project member or owner (403 Forbidden if non-member).
+   * 3. Returns aggregated total tasks, status counts, priority counts, and overdue tasks.
+   */
+  async getProjectSummary(userId: string, projectId: string): Promise<ProjectTaskSummary> {
+    // 1. Verify project existence
+    const project = await this.projectRepository.findById(projectId);
+    if (!project) {
+      throw new NotFoundError('Project not found', 'PROJECT_NOT_FOUND');
+    }
+
+    // 2. Verify caller authorization (must be project member or owner)
+    const isMember =
+      project.ownerId === userId ||
+      project.members.some((member) => member.userId === userId);
+
+    if (!isMember) {
+      throw new ForbiddenError(
+        'You do not have access to view this project summary',
+        'FORBIDDEN'
+      );
+    }
+
+    // 3. Delegate to repository
+    return this.taskRepository.getProjectSummary(projectId);
   }
 }
