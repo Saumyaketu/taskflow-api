@@ -16,7 +16,7 @@ import { TaskService } from '../src/services/task.service.js';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../src/errors/AppError.js';
 import { Priority, TaskStatus } from '@prisma/client';
 
-describe('Task Management Engine - Task Creation', () => {
+describe('Task Management Engine & Lifecycle Suite', () => {
   // -------------------------------------------------------------------------
   // Test Fixtures & Factories
   // -------------------------------------------------------------------------
@@ -1026,6 +1026,394 @@ describe('Task Management Engine - Task Creation', () => {
       expect(res.status).toBe(200);
       expect(res.body.message).toBe('Task deleted successfully');
       expect(res.body.taskId).toBe('t-1');
+    });
+  });
+
+  // =========================================================================
+  // 7. Day 13: Task Lifecycle, Membership & Dual Deletion Automated Test Suite
+  // =========================================================================
+  describe('Day 13: Task Lifecycle, Membership & Dual Deletion Rigorous Verification', () => {
+    const thirdMember = createUser('d4444444-4444-4444-4444-444444444444', 'Jim Gordon', 'gordon@gcpd.gov');
+    const thirdMemberToken = generateToken({ userId: thirdMember.id, email: thirdMember.email });
+
+    beforeEach(() => {
+      (vi.spyOn(prisma.user, 'findUnique') as any).mockImplementation(async (args: any) => {
+        const id = args?.where?.id;
+        if (id === owner.id) return owner;
+        if (id === member.id) return member;
+        if (id === thirdMember.id) return thirdMember;
+        if (id === outsider.id) return outsider;
+        return null;
+      });
+    });
+
+    describe('Scenario 1: Membership & Assignee Validation Rules', () => {
+      it('rejects task creation if assignee is not a project member (400 Bad Request)', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+        const res = await request(app)
+          .post('/projects/p-1/tasks')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({
+            title: 'Task for outsider',
+            assignee_id: outsider.id,
+          });
+
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('INVALID_ASSIGNEE');
+        expect(res.body.error.message).toContain('Assignee must be a member of the project');
+      });
+
+      it('rejects partial patch update if new assignee is not a project member (400 Bad Request)', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+        const res = await request(app)
+          .patch('/tasks/t-1')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({
+            assignee_id: outsider.id,
+          });
+
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('INVALID_ASSIGNEE');
+      });
+
+      it('allows task creation when assigned to project owner or member', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+        const mockTaskAssignedToOwner = createTaskFixture({
+          id: 't-owner-assigned',
+          assigneeId: owner.id,
+          assignee: { id: owner.id, name: owner.name, email: owner.email },
+        });
+        (vi.spyOn(prisma.task, 'create') as any).mockResolvedValue(mockTaskAssignedToOwner);
+
+        const res = await request(app)
+          .post('/projects/p-1/tasks')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({
+            title: 'Task assigned to Owner',
+            assigneeId: owner.id,
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.task.assigneeId).toBe(owner.id);
+      });
+    });
+
+    describe('Scenario 2: completed_at Dynamic Lifecycle & Status Transitions', () => {
+      it('stores completed_at when status transitions to DONE from TODO', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const existingTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          status: TaskStatus.TODO,
+          completedAt: null,
+        });
+
+        const completedDate = new Date('2026-11-24T14:00:00.000Z');
+        const updatedTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          status: TaskStatus.DONE,
+          completedAt: completedDate,
+        });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(existingTask);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+        const updateSpy = (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(updatedTask);
+
+        const res = await request(app)
+          .patch('/tasks/t-1')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({ status: 'DONE' });
+
+        expect(res.status).toBe(200);
+        expect(updateSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 't-1' },
+            data: expect.objectContaining({
+              status: TaskStatus.DONE,
+              completedAt: expect.any(Date),
+            }),
+          })
+        );
+        expect(res.body.task.status).toBe(TaskStatus.DONE);
+        expect(res.body.task.completedAt).toBe(completedDate.toISOString());
+      });
+
+      it('clears completed_at to null when a DONE task is reopened to TODO', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const existingTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          status: TaskStatus.DONE,
+          completedAt: new Date('2026-11-24T12:00:00.000Z'),
+        });
+        const reopenedTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          status: TaskStatus.TODO,
+          completedAt: null,
+        });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(existingTask);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+        const updateSpy = (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(reopenedTask);
+
+        const res = await request(app)
+          .patch('/tasks/t-1')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({ status: 'TODO' });
+
+        expect(res.status).toBe(200);
+        expect(updateSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 't-1' },
+            data: expect.objectContaining({
+              status: TaskStatus.TODO,
+              completedAt: null,
+            }),
+          })
+        );
+        expect(res.body.task.status).toBe(TaskStatus.TODO);
+        expect(res.body.task.completedAt).toBeNull();
+      });
+
+      it('clears completed_at to null when a DONE task is reopened to IN_PROGRESS', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const existingTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          status: TaskStatus.DONE,
+          completedAt: new Date('2026-11-24T12:00:00.000Z'),
+        });
+        const inProgressTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          status: TaskStatus.IN_PROGRESS,
+          completedAt: null,
+        });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(existingTask);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+        const updateSpy = (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(inProgressTask);
+
+        const res = await request(app)
+          .patch('/tasks/t-1')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({ status: 'IN_PROGRESS' });
+
+        expect(res.status).toBe(200);
+        expect(updateSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 't-1' },
+            data: expect.objectContaining({
+              status: TaskStatus.IN_PROGRESS,
+              completedAt: null,
+            }),
+          })
+        );
+        expect(res.body.task.status).toBe(TaskStatus.IN_PROGRESS);
+        expect(res.body.task.completedAt).toBeNull();
+      });
+
+      it('preserves completed_at when updating title/description of a DONE task without modifying status', async () => {
+        const completedDate = new Date('2026-11-20T09:00:00.000Z');
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const existingTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          status: TaskStatus.DONE,
+          completedAt: completedDate,
+        });
+        const updatedTask = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          title: 'Updated Done Task Title',
+          status: TaskStatus.DONE,
+          completedAt: completedDate,
+        });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(existingTask);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+        const updateSpy = (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(updatedTask);
+
+        const res = await request(app)
+          .patch('/tasks/t-1')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({ title: 'Updated Done Task Title' });
+
+        expect(res.status).toBe(200);
+        expect(updateSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 't-1' },
+            data: { title: 'Updated Done Task Title' },
+          })
+        );
+        expect(res.body.task.completedAt).toBe(completedDate.toISOString());
+      });
+    });
+
+    describe('Scenario 3: Non-creator / Non-owner Deletion Restrictions', () => {
+      it('prevents non-creator, non-owner project member from deleting task (403 Forbidden)', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member, thirdMember]);
+        const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+        const deleteSpy = vi.spyOn(prisma.task, 'delete');
+
+        const res = await request(app)
+          .delete('/tasks/t-1')
+          .set('Authorization', `Bearer ${thirdMemberToken}`);
+
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+        expect(res.body.error.message).toContain('Only the project owner or the task creator can delete this task');
+        expect(deleteSpy).not.toHaveBeenCalled();
+      });
+
+      it('prevents assigned user (who is not creator or owner) from deleting task (403 Forbidden)', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member, thirdMember]);
+        const task = createTaskFixture({
+          id: 't-1',
+          projectId: 'p-1',
+          creatorId: owner.id,
+          assigneeId: thirdMember.id,
+        });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+        const deleteSpy = vi.spyOn(prisma.task, 'delete');
+
+        const res = await request(app)
+          .delete('/tasks/t-1')
+          .set('Authorization', `Bearer ${thirdMemberToken}`);
+
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+        expect(deleteSpy).not.toHaveBeenCalled();
+      });
+
+      it('prevents non-member outsider from deleting task (403 Forbidden)', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+        const deleteSpy = vi.spyOn(prisma.task, 'delete');
+
+        const res = await request(app)
+          .delete('/tasks/t-1')
+          .set('Authorization', `Bearer ${outsiderToken}`);
+
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+        expect(deleteSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('Scenario 4: Complete Multi-Step Collaboration Lifecycle E2E', () => {
+      it('executes full lifecycle: create -> reject non-member -> valid update -> complete -> reopen -> unauthorized delete rejected -> owner deleted', async () => {
+        const proj = createProjectFixture('p-1', 'Mission Gotham', owner, [owner, member, thirdMember]);
+        (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+        // Step 1: Member creates a task assigned to owner with status TODO
+        const initialTask = createTaskFixture({
+          id: 't-lifecycle-1',
+          projectId: 'p-1',
+          creatorId: member.id,
+          assigneeId: owner.id,
+          title: 'Batmobile Maintenance',
+          priority: Priority.HIGH,
+          status: TaskStatus.TODO,
+          completedAt: null,
+        });
+        (vi.spyOn(prisma.task, 'create') as any).mockResolvedValue(initialTask);
+
+        const createRes = await request(app)
+          .post('/projects/p-1/tasks')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({
+            title: 'Batmobile Maintenance',
+            priority: 'HIGH',
+            assigneeId: owner.id,
+          });
+
+        expect(createRes.status).toBe(201);
+        expect(createRes.body.task.status).toBe(TaskStatus.TODO);
+        expect(createRes.body.task.completedAt).toBeNull();
+
+        // Step 2: Member updates task to IN_PROGRESS (completedAt still null)
+        const inProgressTask = { ...initialTask, status: TaskStatus.IN_PROGRESS };
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(initialTask);
+        (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(inProgressTask);
+
+        const inProgressRes = await request(app)
+          .patch('/tasks/t-lifecycle-1')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({ status: 'IN_PROGRESS' });
+
+        expect(inProgressRes.status).toBe(200);
+        expect(inProgressRes.body.task.status).toBe(TaskStatus.IN_PROGRESS);
+        expect(inProgressRes.body.task.completedAt).toBeNull();
+
+        // Step 3: Member marks task as DONE -> completedAt populated
+        const doneDate = new Date('2026-11-24T14:30:00.000Z');
+        const doneTask = { ...initialTask, status: TaskStatus.DONE, completedAt: doneDate };
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(inProgressTask);
+        (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(doneTask);
+
+        const doneRes = await request(app)
+          .patch('/tasks/t-lifecycle-1')
+          .set('Authorization', `Bearer ${memberToken}`)
+          .send({ status: 'DONE' });
+
+        expect(doneRes.status).toBe(200);
+        expect(doneRes.body.task.status).toBe(TaskStatus.DONE);
+        expect(doneRes.body.task.completedAt).toBe(doneDate.toISOString());
+
+        // Step 4: Third member (not creator, not owner) attempts deletion -> 403 Forbidden
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(doneTask);
+        const forbiddenDeleteRes = await request(app)
+          .delete('/tasks/t-lifecycle-1')
+          .set('Authorization', `Bearer ${thirdMemberToken}`);
+
+        expect(forbiddenDeleteRes.status).toBe(403);
+        expect(forbiddenDeleteRes.body.error.code).toBe('FORBIDDEN');
+
+        // Step 5: Owner reopens task to TODO -> completedAt cleared
+        const reopenedTask = { ...initialTask, status: TaskStatus.TODO, completedAt: null };
+        (vi.spyOn(prisma.task, 'update') as any).mockResolvedValue(reopenedTask);
+
+        const reopenRes = await request(app)
+          .patch('/tasks/t-lifecycle-1')
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .send({ status: 'TODO' });
+
+        expect(reopenRes.status).toBe(200);
+        expect(reopenRes.body.task.status).toBe(TaskStatus.TODO);
+        expect(reopenRes.body.task.completedAt).toBeNull();
+
+        // Step 6: Project owner deletes task -> 200 OK
+        (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(reopenedTask);
+        (vi.spyOn(prisma.task, 'delete') as any).mockResolvedValue(reopenedTask);
+
+        const deleteRes = await request(app)
+          .delete('/tasks/t-lifecycle-1')
+          .set('Authorization', `Bearer ${ownerToken}`);
+
+        expect(deleteRes.status).toBe(200);
+        expect(deleteRes.body.message).toBe('Task deleted successfully');
+        expect(deleteRes.body.taskId).toBe('t-lifecycle-1');
+      });
     });
   });
 });
