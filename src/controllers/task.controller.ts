@@ -44,4 +44,24 @@ export class TaskController {
       task,
     });
   });
+
+  /**
+   * Handles task deletion (DELETE /tasks/:taskId)
+   * Restricted strictly to the project owner OR the task creator.
+   * Responds with 200 OK.
+   */
+  delete = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const user = req.user;
+    if (!user) {
+      throw new UnauthorizedError('Authentication token is required', 'UNAUTHORIZED');
+    }
+
+    const taskId = String(req.params.taskId);
+    await this.taskService.deleteTask(user.id, taskId);
+
+    res.status(200).json({
+      message: 'Task deleted successfully',
+      taskId,
+    });
+  });
 }

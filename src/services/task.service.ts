@@ -142,4 +142,41 @@ export class TaskService {
       completedAt,
     });
   }
+
+  /**
+   * Deletes a task by ID with dual creator-or-owner authorization.
+   *
+   * Business Rules:
+   * 1. Task must exist (404 Not Found if missing).
+   * 2. Project must exist (404 Not Found if missing).
+   * 3. Authorization constraint: Only the project owner OR the task creator can delete the task.
+   *    Non-authorized members or outsiders receive 403 Forbidden.
+   */
+  async deleteTask(userId: string, taskId: string): Promise<void> {
+    // 1. Verify task existence
+    const task = await this.taskRepository.findById(taskId);
+    if (!task) {
+      throw new NotFoundError('Task not found', 'TASK_NOT_FOUND');
+    }
+
+    // 2. Verify project existence
+    const project = await this.projectRepository.findById(task.projectId);
+    if (!project) {
+      throw new NotFoundError('Project not found', 'PROJECT_NOT_FOUND');
+    }
+
+    // 3. Strict dual creator-or-owner check
+    const isOwner = project.ownerId === userId;
+    const isCreator = task.creatorId === userId;
+
+    if (!isOwner && !isCreator) {
+      throw new ForbiddenError(
+        'Only the project owner or the task creator can delete this task',
+        'FORBIDDEN'
+      );
+    }
+
+    // 4. Delete task
+    await this.taskRepository.delete(taskId);
+  }
 }

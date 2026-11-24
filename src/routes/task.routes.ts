@@ -24,6 +24,17 @@ export const createTaskRouter = (
     taskController.update
   );
 
+  /**
+   * @route DELETE /tasks/:taskId
+   * @desc Delete task (restricted strictly to project owner OR task creator)
+   * @access Protected (Owner or Task Creator only)
+   */
+  router.delete(
+    '/:taskId',
+    validate({ params: taskIdParamSchema }),
+    taskController.delete
+  );
+
   return router;
 };
 

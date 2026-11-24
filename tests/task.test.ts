@@ -281,6 +281,21 @@ describe('Task Management Engine - Task Creation', () => {
       expect(res.title).toBe('Updated Name');
       expect(res.status).toBe(TaskStatus.DONE);
     });
+
+    it('delete: delegates to Prisma task.delete with target taskId', async () => {
+      const mockDb = {
+        task: {
+          delete: vi.fn().mockResolvedValue(createTaskFixture()),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      await repo.delete('t-1');
+
+      expect(mockDb.task.delete).toHaveBeenCalledWith({
+        where: { id: 't-1' },
+      });
+    });
   });
 
   // =========================================================================
@@ -524,6 +539,76 @@ describe('Task Management Engine - Task Creation', () => {
           completedAt: undefined,
         })
       );
+    });
+
+    it('deleteTask: allows task creator to delete task', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+      const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(task),
+        delete: vi.fn().mockResolvedValue(task),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await service.deleteTask(member.id, 't-1');
+
+      expect(mockTaskRepo.delete).toHaveBeenCalledWith('t-1');
+    });
+
+    it('deleteTask: allows project owner to delete task created by another member', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+      const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(task),
+        delete: vi.fn().mockResolvedValue(task),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await service.deleteTask(owner.id, 't-1');
+
+      expect(mockTaskRepo.delete).toHaveBeenCalledWith('t-1');
+    });
+
+    it('deleteTask: rejects non-creator, non-owner member with 403 Forbidden', async () => {
+      const otherMember = createUser('d4444444-4444-4444-4444-444444444444', 'Jim Gordon', 'gordon@gcpd.gov');
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member, otherMember]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+      const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(task),
+        delete: vi.fn(),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await expect(service.deleteTask(otherMember.id, 't-1')).rejects.toThrow(ForbiddenError);
+      expect(mockTaskRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('deleteTask: rejects outsider with 403 Forbidden', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+      const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(task),
+        delete: vi.fn(),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo, mockProjectRepo);
+      await expect(service.deleteTask(outsider.id, 't-1')).rejects.toThrow(ForbiddenError);
+      expect(mockTaskRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('deleteTask: rejects when task does not exist (404 Not Found)', async () => {
+      const mockTaskRepo = {
+        findById: vi.fn().mockResolvedValue(null),
+        delete: vi.fn(),
+      } as any;
+
+      const service = new TaskService(mockTaskRepo);
+      await expect(service.deleteTask(member.id, 't-missing')).rejects.toThrow(NotFoundError);
+      expect(mockTaskRepo.delete).not.toHaveBeenCalled();
     });
   });
 
@@ -851,6 +936,96 @@ describe('Task Management Engine - Task Creation', () => {
       expect(res.body.task.title).toBe('Refactored Pipeline');
       expect(res.body.task.priority).toBe(Priority.LOW);
       expect(res.body.task.assigneeId).toBe(owner.id);
+    });
+  });
+
+  // =========================================================================
+  // 6. HTTP Integration Tests (DELETE /tasks/:taskId)
+  // =========================================================================
+  describe('DELETE /tasks/:taskId HTTP Integration', () => {
+    it('returns 401 Unauthorized when request lacks authentication token', async () => {
+      const res = await request(app).delete('/tasks/t-1');
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('returns 404 Not Found when task does not exist', async () => {
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(null);
+
+      const res = await request(app)
+        .delete('/tasks/t-missing')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('TASK_NOT_FOUND');
+    });
+
+    it('returns 403 Forbidden when caller is a member but neither creator nor owner', async () => {
+      const otherMember = createUser('d4444444-4444-4444-4444-444444444444', 'Jim Gordon', 'gordon@gcpd.gov');
+      const otherToken = generateToken({ userId: otherMember.id, email: otherMember.email });
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member, otherMember]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+
+      (vi.spyOn(prisma.user, 'findUnique') as any).mockResolvedValue(otherMember);
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      const res = await request(app)
+        .delete('/tasks/t-1')
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('returns 403 Forbidden when caller is an outsider', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      const res = await request(app)
+        .delete('/tasks/t-1')
+        .set('Authorization', `Bearer ${outsiderToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('returns 200 OK when task creator deletes the task', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'delete') as any).mockResolvedValue(task);
+
+      const res = await request(app)
+        .delete('/tasks/t-1')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe('Task deleted successfully');
+      expect(res.body.taskId).toBe('t-1');
+    });
+
+    it('returns 200 OK when project owner deletes a task created by a member', async () => {
+      const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+      const task = createTaskFixture({ id: 't-1', projectId: 'p-1', creatorId: member.id });
+
+      (vi.spyOn(prisma.task, 'findUnique') as any).mockResolvedValue(task);
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'delete') as any).mockResolvedValue(task);
+
+      const res = await request(app)
+        .delete('/tasks/t-1')
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe('Task deleted successfully');
+      expect(res.body.taskId).toBe('t-1');
     });
   });
 });

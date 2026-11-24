@@ -141,4 +141,13 @@ export class TaskRepository {
       },
     });
   }
+
+  /**
+   * Deletes a task by unique ID.
+   */
+  async delete(taskId: string): Promise<Task> {
+    return this.db.task.delete({
+      where: { id: taskId },
+    });
+  }
 }
