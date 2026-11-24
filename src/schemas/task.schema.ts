@@ -2,28 +2,19 @@ import { z } from 'zod';
 import { Priority, TaskStatus } from '@prisma/client';
 
 /**
- * ISO-8601 validation regex supporting standard date (YYYY-MM-DD) and full ISO datetime strings
+ * Native Zod ISO-8601 schemas:
+ * - isoDateTimeSchema: For full ISO datetime (e.g. "2026-11-24T12:13:00Z" or with timezone offsets)
+ * - isoDateOnlySchema: For date-only strings (e.g. "2026-11-24")
+ * - iso8601DateSchema: Union accepting either standard format
  */
-const iso8601Regex = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
-
-export const iso8601DateSchema = z
-  .string('due_date must be a valid ISO-8601 string')
-  .trim()
-  .refine(
-    (val) => {
-      if (!iso8601Regex.test(val)) return false;
-      const parsed = new Date(val);
-      return !isNaN(parsed.getTime());
-    },
-    {
-      message: 'due_date must be a valid ISO-8601 date format',
-    }
-  );
+export const isoDateTimeSchema = z.iso.datetime({ offset: true });
+export const isoDateOnlySchema = z.iso.date();
+export const iso8601DateSchema = z.union([isoDateTimeSchema, isoDateOnlySchema]);
 
 /**
  * Validation schema for task creation (POST /projects/:projectId/tasks).
- * Enforces non-blank title after trimming, priority in [LOW, MEDIUM, HIGH],
- * status in [TODO, IN_PROGRESS, DONE], optional assigneeId, and optional ISO-8601 dueDate.
+ * Enforces non-blank title after trimming, native Priority and TaskStatus enums,
+ * optional assigneeId, and optional ISO-8601 dueDate.
  */
 export const createTaskSchema = z
   .object({
@@ -38,18 +29,8 @@ export const createTaskSchema = z
       .max(2000, 'Description cannot exceed 2000 characters')
       .optional()
       .nullable(),
-    priority: z
-      .enum(['LOW', 'MEDIUM', 'HIGH'], {
-        message: 'Priority must be one of: LOW, MEDIUM, HIGH',
-      })
-      .optional()
-      .default('MEDIUM'),
-    status: z
-      .enum(['TODO', 'IN_PROGRESS', 'DONE'], {
-        message: 'Status must be one of: TODO, IN_PROGRESS, DONE',
-      })
-      .optional()
-      .default('TODO'),
+    priority: z.enum(Priority).optional().default(Priority.MEDIUM),
+    status: z.enum(TaskStatus).optional().default(TaskStatus.TODO),
     assigneeId: z.string().trim().min(1, 'assigneeId cannot be empty').optional().nullable(),
     assignee_id: z.string().trim().min(1, 'assignee_id cannot be empty').optional().nullable(),
     dueDate: iso8601DateSchema.optional().nullable(),
@@ -62,8 +43,8 @@ export const createTaskSchema = z
     return {
       title: data.title.trim(),
       description: data.description && data.description.trim().length > 0 ? data.description.trim() : null,
-      priority: data.priority as Priority,
-      status: data.status as TaskStatus,
+      priority: data.priority,
+      status: data.status,
       assigneeId: rawAssignee && rawAssignee.trim().length > 0 ? rawAssignee.trim() : null,
       dueDate: rawDueDate ? new Date(rawDueDate) : null,
     };
@@ -89,16 +70,8 @@ export const updateTaskSchema = z
       .max(2000, 'Description cannot exceed 2000 characters')
       .optional()
       .nullable(),
-    priority: z
-      .enum(['LOW', 'MEDIUM', 'HIGH'], {
-        message: 'Priority must be one of: LOW, MEDIUM, HIGH',
-      })
-      .optional(),
-    status: z
-      .enum(['TODO', 'IN_PROGRESS', 'DONE'], {
-        message: 'Status must be one of: TODO, IN_PROGRESS, DONE',
-      })
-      .optional(),
+    priority: z.enum(Priority).optional(),
+    status: z.enum(TaskStatus).optional(),
     assigneeId: z.string().trim().min(1, 'assigneeId cannot be empty').optional().nullable(),
     assignee_id: z.string().trim().min(1, 'assignee_id cannot be empty').optional().nullable(),
     dueDate: iso8601DateSchema.optional().nullable(),
@@ -122,10 +95,10 @@ export const updateTaskSchema = z
         data.description && data.description.trim().length > 0 ? data.description.trim() : null;
     }
     if (data.priority !== undefined) {
-      result.priority = data.priority as Priority;
+      result.priority = data.priority;
     }
     if (data.status !== undefined) {
-      result.status = data.status as TaskStatus;
+      result.status = data.status;
     }
 
     const rawAssignee = data.assigneeId !== undefined ? data.assigneeId : data.assignee_id;

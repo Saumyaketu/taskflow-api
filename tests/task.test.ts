@@ -6,6 +6,8 @@ import { generateToken } from '../src/utils/jwt.js';
 import {
   createTaskSchema,
   updateTaskSchema,
+  isoDateTimeSchema,
+  isoDateOnlySchema,
   iso8601DateSchema,
   taskIdParamSchema,
 } from '../src/schemas/task.schema.js';
@@ -90,9 +92,13 @@ describe('Task Management Engine - Task Creation', () => {
   // 1. Zod Validation Schemas
   // =========================================================================
   describe('Validation Schemas (createTaskSchema, iso8601DateSchema, taskIdParamSchema)', () => {
-    it('iso8601DateSchema: validates standard ISO date formats and rejects invalid strings', () => {
+    it('iso8601DateSchema, isoDateTimeSchema, isoDateOnlySchema: validate ISO date & datetime formats using native Zod schemas', () => {
+      expect(isoDateOnlySchema.parse('2026-12-31')).toBe('2026-12-31');
+      expect(isoDateTimeSchema.parse('2026-12-31T23:59:59.000Z')).toBe('2026-12-31T23:59:59.000Z');
       expect(iso8601DateSchema.parse('2026-12-31')).toBe('2026-12-31');
       expect(iso8601DateSchema.parse('2026-12-31T23:59:59.000Z')).toBe('2026-12-31T23:59:59.000Z');
+      expect(() => isoDateOnlySchema.parse('not-a-date')).toThrow();
+      expect(() => isoDateTimeSchema.parse('not-a-date')).toThrow();
       expect(() => iso8601DateSchema.parse('not-a-date')).toThrow();
       expect(() => iso8601DateSchema.parse('2026-13-45')).toThrow();
     });
@@ -165,7 +171,7 @@ describe('Task Management Engine - Task Creation', () => {
           title: 'Test',
           due_date: 'next week',
         })
-      ).toThrow(/due_date must be a valid ISO-8601/);
+      ).toThrow(/Invalid ISO (datetime|date)|Invalid input/);
     });
 
     it('updateTaskSchema: accepts partial updates and normalizes aliases', () => {
@@ -195,7 +201,7 @@ describe('Task Management Engine - Task Creation', () => {
     it('updateTaskSchema: rejects invalid priority, status, and due_date format', () => {
       expect(() => updateTaskSchema.parse({ priority: 'INVALID' })).toThrow(/LOW.*MEDIUM.*HIGH/);
       expect(() => updateTaskSchema.parse({ status: 'INVALID' })).toThrow(/TODO.*IN_PROGRESS.*DONE/);
-      expect(() => updateTaskSchema.parse({ due_date: 'invalid-date' })).toThrow(/due_date must be a valid ISO-8601/);
+      expect(() => updateTaskSchema.parse({ due_date: 'invalid-date' })).toThrow(/Invalid ISO (datetime|date)|Invalid input/);
     });
   });
 
