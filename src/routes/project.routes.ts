@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { ProjectController } from '../controllers/project.controller.js';
+import { TaskController } from '../controllers/task.controller.js';
 import { validate } from '../middlewares/validate.js';
 import { authenticate } from '../middlewares/auth.middleware.js';
 import {
@@ -7,9 +8,11 @@ import {
   projectIdParamSchema,
   addMemberSchema,
 } from '../schemas/project.schema.js';
+import { createTaskSchema } from '../schemas/task.schema.js';
 
 export const createProjectRouter = (
   projectController: ProjectController = new ProjectController(),
+  taskController: TaskController = new TaskController(),
   authMiddleware = authenticate
 ): Router => {
   const router = Router();
@@ -54,6 +57,17 @@ export const createProjectRouter = (
     '/:projectId/members',
     validate({ params: projectIdParamSchema, body: addMemberSchema }),
     projectController.addMember
+  );
+
+  /**
+   * @route POST /projects/:projectId/tasks
+   * @desc Create a new task within a project (members only)
+   * @access Protected (Members only)
+   */
+  router.post(
+    '/:projectId/tasks',
+    validate({ params: projectIdParamSchema, body: createTaskSchema }),
+    taskController.create
   );
 
   return router;
