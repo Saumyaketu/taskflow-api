@@ -64,4 +64,40 @@ export class TaskController {
       taskId,
     });
   });
+
+  /**
+   * Handles listing project tasks with pagination and dynamic sorting (GET /projects/:projectId/tasks)
+   * Accessible only to project members and owner.
+   * Responds with 200 OK, tasks array, and pagination metadata (total, page, limit, totalPages).
+   */
+  listByProject = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const user = req.user;
+    if (!user) {
+      throw new UnauthorizedError('Authentication token is required', 'UNAUTHORIZED');
+    }
+
+    const projectId = String(req.params.projectId);
+    const query = req.query as any;
+
+    const result = await this.taskService.getProjectTasks(user.id, projectId, {
+      page: query.page,
+      limit: query.limit,
+      sortBy: query.sortBy,
+      order: query.order,
+    });
+
+    res.status(200).json({
+      tasks: result.tasks,
+      pagination: {
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+      },
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
+    });
+  });
 }

@@ -8,7 +8,7 @@ import {
   projectIdParamSchema,
   addMemberSchema,
 } from '../schemas/project.schema.js';
-import { createTaskSchema } from '../schemas/task.schema.js';
+import { createTaskSchema, listTasksQuerySchema } from '../schemas/task.schema.js';
 
 export const createProjectRouter = (
   projectController: ProjectController = new ProjectController(),
@@ -68,6 +68,17 @@ export const createProjectRouter = (
     '/:projectId/tasks',
     validate({ params: projectIdParamSchema, body: createTaskSchema }),
     taskController.create
+  );
+
+  /**
+   * @route GET /projects/:projectId/tasks
+   * @desc List project tasks with cursor/offset pagination and dynamic sorting (members only)
+   * @access Protected (Members only)
+   */
+  router.get(
+    '/:projectId/tasks',
+    validate({ params: projectIdParamSchema, query: listTasksQuerySchema }),
+    taskController.listByProject
   );
 
   return router;

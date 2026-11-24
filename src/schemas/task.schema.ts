@@ -124,3 +124,77 @@ export const taskIdParamSchema = z.object({
 });
 
 export type TaskIdParam = z.infer<typeof taskIdParamSchema>;
+
+/**
+ * Validation schema for query parameters when listing project tasks (GET /projects/:projectId/tasks).
+ * Supports pagination (page, limit with default 10, max cap 50)
+ * and dynamic sorting (sort_by=created_at|due_date, order=asc|desc).
+ */
+export const listTasksQuerySchema = z
+  .object({
+    page: z
+      .preprocess(
+        (val) => (val === undefined || val === '' ? 1 : Number(val)),
+        z
+          .number('page must be an integer')
+          .int('page must be an integer')
+          .min(1, 'page must be at least 1')
+      )
+      .default(1),
+    limit: z
+      .preprocess(
+        (val) => (val === undefined || val === '' ? 10 : Number(val)),
+        z
+          .number('limit must be an integer')
+          .int('limit must be an integer')
+          .min(1, 'limit must be at least 1')
+          .max(50, 'limit cannot exceed 50')
+      )
+      .default(10),
+    sort_by: z.string().trim().optional(),
+    sortBy: z.string().trim().optional(),
+    order: z.string().trim().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const rawSortBy = data.sort_by ?? data.sortBy;
+    if (rawSortBy !== undefined && rawSortBy !== '') {
+      const normalized = rawSortBy.toLowerCase();
+      if (!['created_at', 'due_date', 'createdat', 'duedate'].includes(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['sort_by'],
+          message: "sort_by must be one of: 'created_at', 'due_date'",
+        });
+      }
+    }
+    if (data.order !== undefined && data.order !== '') {
+      const normalizedOrder = data.order.toLowerCase();
+      if (!['asc', 'desc'].includes(normalizedOrder)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['order'],
+          message: "order must be either 'asc' or 'desc'",
+        });
+      }
+    }
+  })
+  .transform((data) => {
+    const rawSortBy = (data.sort_by ?? data.sortBy)?.toLowerCase();
+    let sortBy: 'createdAt' | 'dueDate' = 'createdAt';
+    if (rawSortBy === 'due_date' || rawSortBy === 'duedate') {
+      sortBy = 'dueDate';
+    }
+
+    const rawOrder = data.order?.toLowerCase();
+    const order: 'asc' | 'desc' = rawOrder === 'desc' ? 'desc' : 'asc';
+
+    return {
+      page: data.page,
+      limit: data.limit,
+      sortBy,
+      order,
+    };
+  });
+
+export type ListTasksQueryInput = z.infer<typeof listTasksQuerySchema>;
+

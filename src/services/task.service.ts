@@ -1,5 +1,5 @@
 import { TaskStatus } from '@prisma/client';
-import { TaskRepository, TaskWithDetails } from '../repositories/task.repository.js';
+import { TaskRepository, TaskWithDetails, PaginatedTasksResult } from '../repositories/task.repository.js';
 import { ProjectRepository } from '../repositories/project.repository.js';
 import { CreateTaskInput, UpdateTaskInput } from '../schemas/task.schema.js';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../errors/AppError.js';
@@ -178,5 +178,51 @@ export class TaskService {
 
     // 4. Delete task
     await this.taskRepository.delete(taskId);
+  }
+
+  /**
+   * Retrieves a paginated and sorted list of tasks for a project.
+   *
+   * Business Rules:
+   * 1. Project must exist (404 Not Found if missing).
+   * 2. Requester must be a member or owner of the project (403 Forbidden if non-member).
+   * 3. Returns tasks along with pagination metadata: total, page, limit, totalPages.
+   */
+  async getProjectTasks(
+    userId: string,
+    projectId: string,
+    options: {
+      page: number;
+      limit: number;
+      sortBy?: 'createdAt' | 'dueDate';
+      order?: 'asc' | 'desc';
+    }
+  ): Promise<PaginatedTasksResult> {
+    // 1. Verify project existence
+    const project = await this.projectRepository.findById(projectId);
+    if (!project) {
+      throw new NotFoundError('Project not found', 'PROJECT_NOT_FOUND');
+    }
+
+    // 2. Verify caller authorization (must be project member or owner)
+    const isMember =
+      project.ownerId === userId ||
+      project.members.some((member) => member.userId === userId);
+
+    if (!isMember) {
+      throw new ForbiddenError(
+        'You do not have access to view tasks in this project',
+        'FORBIDDEN'
+      );
+    }
+
+    // 3. Delegate to repository
+    return this.taskRepository.findProjectTasks({
+      projectId,
+      page: options.page,
+      limit: options.limit,
+      sortBy: options.sortBy,
+      order: options.order,
+    });
   }
 }

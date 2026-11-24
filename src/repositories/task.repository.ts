@@ -36,6 +36,23 @@ export type TaskWithDetails = Task & {
   } | null;
 };
 
+export interface FindProjectTasksOptions {
+  projectId: string;
+  page: number;
+  limit: number;
+  sortBy?: 'createdAt' | 'dueDate';
+  order?: 'asc' | 'desc';
+}
+
+export interface PaginatedTasksResult {
+  tasks: TaskWithDetails[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+
 export class TaskRepository {
   constructor(private readonly db: PrismaClient = defaultPrisma) {}
 
@@ -149,5 +166,55 @@ export class TaskRepository {
     return this.db.task.delete({
       where: { id: taskId },
     });
+  }
+
+  /**
+   * Retrieves a paginated and sorted list of tasks for a given project.
+   */
+  async findProjectTasks(options: FindProjectTasksOptions): Promise<PaginatedTasksResult> {
+    const { projectId, page, limit, sortBy = 'createdAt', order = 'asc' } = options;
+    const skip = (page - 1) * limit;
+    const take = limit;
+
+    const [total, tasks] = await Promise.all([
+      this.db.task.count({
+        where: { projectId },
+      }),
+      this.db.task.findMany({
+        where: { projectId },
+        skip,
+        take,
+        orderBy: [
+          { [sortBy]: order },
+          { id: 'asc' },
+        ],
+        include: {
+          creator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+          assignee: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      tasks,
+      total,
+      page,
+      limit,
+      totalPages,
+    };
   }
 }

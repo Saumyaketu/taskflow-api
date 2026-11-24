@@ -10,6 +10,7 @@ import {
   isoDateOnlySchema,
   iso8601DateSchema,
   taskIdParamSchema,
+  listTasksQuerySchema,
 } from '../src/schemas/task.schema.js';
 import { TaskRepository } from '../src/repositories/task.repository.js';
 import { TaskService } from '../src/services/task.service.js';
@@ -203,6 +204,63 @@ describe('Task Management Engine & Lifecycle Suite', () => {
       expect(() => updateTaskSchema.parse({ status: 'INVALID' })).toThrow(/TODO.*IN_PROGRESS.*DONE/);
       expect(() => updateTaskSchema.parse({ due_date: 'invalid-date' })).toThrow(/Invalid ISO (datetime|date)|Invalid input/);
     });
+
+    describe('listTasksQuerySchema', () => {
+      it('applies default pagination and sorting values when query is empty', () => {
+        const parsed = listTasksQuerySchema.parse({});
+        expect(parsed).toEqual({
+          page: 1,
+          limit: 10,
+          sortBy: 'createdAt',
+          order: 'asc',
+        });
+      });
+
+      it('correctly coerces and parses string pagination query parameters', () => {
+        const parsed = listTasksQuerySchema.parse({ page: '3', limit: '25' });
+        expect(parsed.page).toBe(3);
+        expect(parsed.limit).toBe(25);
+      });
+
+      it('supports sort_by=due_date and order=desc (snake_case and uppercase order)', () => {
+        const parsed = listTasksQuerySchema.parse({ sort_by: 'due_date', order: 'DESC' });
+        expect(parsed.sortBy).toBe('dueDate');
+        expect(parsed.order).toBe('desc');
+      });
+
+      it('supports sortBy=createdAt and order=asc (camelCase)', () => {
+        const parsed = listTasksQuerySchema.parse({ sortBy: 'createdAt', order: 'asc' });
+        expect(parsed.sortBy).toBe('createdAt');
+        expect(parsed.order).toBe('asc');
+      });
+
+      it('enforces limit boundary checks (limit 50 passes, limit 51 rejected)', () => {
+        expect(listTasksQuerySchema.parse({ limit: '50' }).limit).toBe(50);
+        expect(() => listTasksQuerySchema.parse({ limit: '51' })).toThrow(/limit cannot exceed 50/);
+      });
+
+      it('enforces min boundary checks for page and limit', () => {
+        expect(() => listTasksQuerySchema.parse({ page: '0' })).toThrow(/page must be at least 1/);
+        expect(() => listTasksQuerySchema.parse({ page: '-1' })).toThrow(/page must be at least 1/);
+        expect(() => listTasksQuerySchema.parse({ limit: '0' })).toThrow(/limit must be at least 1/);
+        expect(() => listTasksQuerySchema.parse({ limit: '-1' })).toThrow(/limit must be at least 1/);
+      });
+
+      it('rejects unsupported sort_by columns', () => {
+        expect(() => listTasksQuerySchema.parse({ sort_by: 'priority' })).toThrow(
+          /sort_by must be one of: 'created_at', 'due_date'/
+        );
+        expect(() => listTasksQuerySchema.parse({ sort_by: 'invalid' })).toThrow(
+          /sort_by must be one of: 'created_at', 'due_date'/
+        );
+      });
+
+      it('rejects unsupported order values', () => {
+        expect(() => listTasksQuerySchema.parse({ order: 'sideways' })).toThrow(
+          /order must be either 'asc' or 'desc'/
+        );
+      });
+    });
   });
 
   // =========================================================================
@@ -295,6 +353,92 @@ describe('Task Management Engine & Lifecycle Suite', () => {
       expect(mockDb.task.delete).toHaveBeenCalledWith({
         where: { id: 't-1' },
       });
+    });
+
+    it('findProjectTasks: queries count and findMany with pagination offset and default createdAt asc order', async () => {
+      const mockTasks = [createTaskFixture({ id: 't-1' }), createTaskFixture({ id: 't-2' })];
+      const mockDb = {
+        task: {
+          count: vi.fn().mockResolvedValue(25),
+          findMany: vi.fn().mockResolvedValue(mockTasks),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      const result = await repo.findProjectTasks({
+        projectId: 'p-1',
+        page: 2,
+        limit: 10,
+        sortBy: 'createdAt',
+        order: 'asc',
+      });
+
+      expect(mockDb.task.count).toHaveBeenCalledWith({
+        where: { projectId: 'p-1' },
+      });
+      expect(mockDb.task.findMany).toHaveBeenCalledWith({
+        where: { projectId: 'p-1' },
+        skip: 10,
+        take: 10,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        include: {
+          creator: { select: { id: true, name: true, email: true } },
+          assignee: { select: { id: true, name: true, email: true } },
+        },
+      });
+      expect(result).toEqual({
+        tasks: mockTasks,
+        total: 25,
+        page: 2,
+        limit: 10,
+        totalPages: 3,
+      });
+    });
+
+    it('findProjectTasks: handles zero total items and calculates totalPages 0', async () => {
+      const mockDb = {
+        task: {
+          count: vi.fn().mockResolvedValue(0),
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      const result = await repo.findProjectTasks({
+        projectId: 'p-1',
+        page: 1,
+        limit: 10,
+      });
+
+      expect(result.total).toBe(0);
+      expect(result.totalPages).toBe(0);
+      expect(result.tasks).toEqual([]);
+    });
+
+    it('findProjectTasks: supports dynamic dueDate desc ordering', async () => {
+      const mockDb = {
+        task: {
+          count: vi.fn().mockResolvedValue(1),
+          findMany: vi.fn().mockResolvedValue([createTaskFixture()]),
+        },
+      } as any;
+
+      const repo = new TaskRepository(mockDb);
+      await repo.findProjectTasks({
+        projectId: 'p-1',
+        page: 1,
+        limit: 20,
+        sortBy: 'dueDate',
+        order: 'desc',
+      });
+
+      expect(mockDb.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 0,
+          take: 20,
+          orderBy: [{ dueDate: 'desc' }, { id: 'asc' }],
+        })
+      );
     });
   });
 
@@ -609,6 +753,96 @@ describe('Task Management Engine & Lifecycle Suite', () => {
       const service = new TaskService(mockTaskRepo);
       await expect(service.deleteTask(member.id, 't-missing')).rejects.toThrow(NotFoundError);
       expect(mockTaskRepo.delete).not.toHaveBeenCalled();
+    });
+
+    describe('getProjectTasks', () => {
+      it('allows project owner to retrieve paginated tasks', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+        const paginatedResult = {
+          tasks: [createTaskFixture()],
+          total: 1,
+          page: 1,
+          limit: 10,
+          totalPages: 1,
+        };
+        const mockTaskRepo = {
+          findProjectTasks: vi.fn().mockResolvedValue(paginatedResult),
+        } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        const res = await service.getProjectTasks(owner.id, 'p-1', {
+          page: 1,
+          limit: 10,
+          sortBy: 'createdAt',
+          order: 'asc',
+        });
+
+        expect(mockTaskRepo.findProjectTasks).toHaveBeenCalledWith({
+          projectId: 'p-1',
+          page: 1,
+          limit: 10,
+          sortBy: 'createdAt',
+          order: 'asc',
+        });
+        expect(res).toEqual(paginatedResult);
+      });
+
+      it('allows project member to retrieve paginated tasks', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+        const paginatedResult = {
+          tasks: [createTaskFixture()],
+          total: 1,
+          page: 2,
+          limit: 5,
+          totalPages: 1,
+        };
+        const mockTaskRepo = {
+          findProjectTasks: vi.fn().mockResolvedValue(paginatedResult),
+        } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        const res = await service.getProjectTasks(member.id, 'p-1', {
+          page: 2,
+          limit: 5,
+          sortBy: 'dueDate',
+          order: 'desc',
+        });
+
+        expect(res).toEqual(paginatedResult);
+      });
+
+      it('rejects outsider non-member with 403 Forbidden', async () => {
+        const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(proj) } as any;
+        const mockTaskRepo = { findProjectTasks: vi.fn() } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        await expect(
+          service.getProjectTasks(outsider.id, 'p-1', {
+            page: 1,
+            limit: 10,
+          })
+        ).rejects.toThrow(ForbiddenError);
+
+        expect(mockTaskRepo.findProjectTasks).not.toHaveBeenCalled();
+      });
+
+      it('rejects with 404 Not Found when project does not exist', async () => {
+        const mockProjectRepo = { findById: vi.fn().mockResolvedValue(null) } as any;
+        const mockTaskRepo = { findProjectTasks: vi.fn() } as any;
+
+        const service = new TaskService(mockTaskRepo, mockProjectRepo);
+        await expect(
+          service.getProjectTasks(member.id, 'p-missing', {
+            page: 1,
+            limit: 10,
+          })
+        ).rejects.toThrow(NotFoundError);
+
+        expect(mockTaskRepo.findProjectTasks).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -1030,9 +1264,9 @@ describe('Task Management Engine & Lifecycle Suite', () => {
   });
 
   // =========================================================================
-  // 7. Day 13: Task Lifecycle, Membership & Dual Deletion Automated Test Suite
+  // 7. Task Lifecycle, Membership & Dual Deletion Automated Test Suite
   // =========================================================================
-  describe('Day 13: Task Lifecycle, Membership & Dual Deletion Rigorous Verification', () => {
+  describe('Task Lifecycle, Membership & Dual Deletion Rigorous Verification', () => {
     const thirdMember = createUser('d4444444-4444-4444-4444-444444444444', 'Jim Gordon', 'gordon@gcpd.gov');
     const thirdMemberToken = generateToken({ userId: thirdMember.id, email: thirdMember.email });
 
@@ -1414,6 +1648,267 @@ describe('Task Management Engine & Lifecycle Suite', () => {
         expect(deleteRes.body.message).toBe('Task deleted successfully');
         expect(deleteRes.body.taskId).toBe('t-lifecycle-1');
       });
+    });
+  });
+
+  // =========================================================================
+  // 8. Paginated and Sorted Task Listing Suite
+  // =========================================================================
+  describe('Paginated and Sorted Task Listing Suite (GET /projects/:projectId/tasks)', () => {
+    const proj = createProjectFixture('p-1', 'Alpha', owner, [owner, member]);
+
+    it('returns 401 Unauthorized when request lacks authentication token', async () => {
+      const res = await request(app).get('/projects/p-1/tasks');
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('returns 401 Unauthorized when authentication token is invalid or malformed', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/tasks')
+        .set('Authorization', 'Bearer invalid-token');
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('INVALID_TOKEN');
+    });
+
+    it('returns 404 Not Found when target project does not exist', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(null);
+
+      const res = await request(app)
+        .get('/projects/p-missing/tasks')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('PROJECT_NOT_FOUND');
+    });
+
+    it('returns 403 Forbidden when caller is not a member or owner of the project', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks')
+        .set('Authorization', `Bearer ${outsiderToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('returns 200 OK with default pagination and sorting (page=1, limit=10, sortBy=createdAt, order=asc)', async () => {
+      const taskList = [
+        createTaskFixture({ id: 't-1', title: 'Task 1' }),
+        createTaskFixture({ id: 't-2', title: 'Task 2' }),
+      ];
+
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(2);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue(taskList);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks')
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.tasks).toHaveLength(2);
+      expect(res.body.pagination).toEqual({
+        total: 2,
+        page: 1,
+        limit: 10,
+        totalPages: 1,
+      });
+      expect(res.body.total).toBe(2);
+      expect(res.body.page).toBe(1);
+      expect(res.body.limit).toBe(10);
+      expect(res.body.totalPages).toBe(1);
+
+      expect(findManySpy).toHaveBeenCalledWith({
+        where: { projectId: 'p-1' },
+        skip: 0,
+        take: 10,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        include: {
+          creator: { select: { id: true, name: true, email: true } },
+          assignee: { select: { id: true, name: true, email: true } },
+        },
+      });
+    });
+
+    it('returns 200 OK with empty tasks and totalPages 0 when project has no tasks', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(0);
+      (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.tasks).toEqual([]);
+      expect(res.body.pagination.total).toBe(0);
+      expect(res.body.pagination.totalPages).toBe(0);
+    });
+
+    it('returns 200 OK with custom pagination offset (page=2, limit=5, total=12, totalPages=3)', async () => {
+      const taskList = [
+        createTaskFixture({ id: 't-6', title: 'Task 6' }),
+        createTaskFixture({ id: 't-7', title: 'Task 7' }),
+      ];
+
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(12);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue(taskList);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?page=2&limit=5')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.tasks).toHaveLength(2);
+      expect(res.body.pagination).toEqual({
+        total: 12,
+        page: 2,
+        limit: 5,
+        totalPages: 3,
+      });
+
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 5,
+          take: 5,
+        })
+      );
+    });
+
+    it('returns 200 OK when sorting by due_date descending (sort_by=due_date&order=desc)', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?sort_by=due_date&order=desc')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ dueDate: 'desc' }, { id: 'asc' }],
+        })
+      );
+    });
+
+    it('returns 200 OK when sorting with camelCase parameters (sortBy=createdAt&order=DESC)', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      const findManySpy = (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/projects/p-1/tasks?sortBy=createdAt&order=DESC')
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(findManySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        })
+      );
+    });
+
+    it('enforces maximum pagination limit cap of 50 (limit=50 succeeds, limit=51 rejected with 422)', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(0);
+      (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([]);
+
+      // Limit 50 should succeed
+      const okRes = await request(app)
+        .get('/projects/p-1/tasks?limit=50')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(okRes.status).toBe(200);
+      expect(okRes.body.pagination.limit).toBe(50);
+
+      // Limit 51 should be rejected with 422 Validation Error
+      const rejectRes = await request(app)
+        .get('/projects/p-1/tasks?limit=51')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(rejectRes.status).toBe(422);
+      expect(rejectRes.body.error.code).toBe('VALIDATION_ERROR');
+      expect(rejectRes.body.error.details.some((d: any) => d.message.includes('limit cannot exceed 50'))).toBe(true);
+    });
+
+    it('rejects invalid limit values <= 0 with 422 Validation Error', async () => {
+      const resZero = await request(app)
+        .get('/projects/p-1/tasks?limit=0')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(resZero.status).toBe(422);
+      expect(resZero.body.error.code).toBe('VALIDATION_ERROR');
+
+      const resNeg = await request(app)
+        .get('/projects/p-1/tasks?limit=-5')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(resNeg.status).toBe(422);
+      expect(resNeg.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects invalid page values <= 0 or non-integer with 422 Validation Error', async () => {
+      const resZero = await request(app)
+        .get('/projects/p-1/tasks?page=0')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(resZero.status).toBe(422);
+      expect(resZero.body.error.code).toBe('VALIDATION_ERROR');
+
+      const resNan = await request(app)
+        .get('/projects/p-1/tasks?page=invalid')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(resNan.status).toBe(422);
+      expect(resNan.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects unsupported sort_by column with 422 Validation Error', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/tasks?sort_by=priority')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(
+        res.body.error.details.some((d: any) =>
+          d.message.includes("sort_by must be one of: 'created_at', 'due_date'")
+        )
+      ).toBe(true);
+    });
+
+    it('rejects unsupported order values with 422 Validation Error', async () => {
+      const res = await request(app)
+        .get('/projects/p-1/tasks?order=sideways')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(
+        res.body.error.details.some((d: any) =>
+          d.message.includes("order must be either 'asc' or 'desc'")
+        )
+      ).toBe(true);
+    });
+
+    it('supports versioned route /api/v1/projects/:projectId/tasks', async () => {
+      (vi.spyOn(prisma.project, 'findUnique') as any).mockResolvedValue(proj);
+      (vi.spyOn(prisma.task, 'count') as any).mockResolvedValue(1);
+      (vi.spyOn(prisma.task, 'findMany') as any).mockResolvedValue([createTaskFixture()]);
+
+      const res = await request(app)
+        .get('/api/v1/projects/p-1/tasks')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.tasks).toHaveLength(1);
+      expect(res.body.pagination.page).toBe(1);
     });
   });
 });
