@@ -10,6 +10,9 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run tests/integration.test.ts",
+    "test:unit": "vitest run tests/auth.test.ts tests/project.test.ts tests/task.test.ts tests/errors.test.ts tests/database.test.ts tests/health.test.ts",
+    "test:all": "vitest run",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy"
