@@ -1,5 +1,7 @@
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerDocument } from './docs/swagger.js';
 import { notFoundHandler, errorHandler } from './middlewares/index.js';
 import { authRouter, projectRouter, taskRouter } from './routes/index.js';
 
@@ -9,6 +11,13 @@ export const createApp = (): Application => {
   // Standard middleware
   app.use(cors());
   app.use(express.json());
+
+  // Interactive Swagger UI & OpenAPI JSON endpoints
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+  app.get(['/api-docs.json', '/api/docs.json', '/openapi.json'], (_req: Request, res: Response) => {
+    res.status(200).json(swaggerDocument);
+  });
 
   // Health check endpoint
   app.get('/health', (_req: Request, res: Response) => {
