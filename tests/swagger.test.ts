@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app.js';
 import { swaggerDocument } from '../src/docs/swagger.js';
-import fs from 'node:fs';
-import path from 'node:path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import process from 'node:process';
 
 describe('Interactive OpenAPI 3.0 / Swagger UI & Documentation Suite', () => {
   describe('GET /api-docs.json & /openapi.json Endpoint', () => {

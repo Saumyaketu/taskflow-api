@@ -1,0 +1,63 @@
+services:
+  # ============================================================================
+  # PostgreSQL Relational Database Service
+  # ============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: taskflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: tracker_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tracker_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - taskflow-network
+
+  # ============================================================================
+  # TaskFlow Express REST API Service
+  # ============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taskflow-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: "postgresql://postgres:postgrespassword@postgres:5432/tracker_db?schema=public"
+      DB_POOL_MAX: 10
+      DB_POOL_IDLE_TIMEOUT_MS: 30000
+      DB_POOL_CONN_TIMEOUT_MS: 5000
+      JWT_SECRET: "taskflow-super-secure-production-jwt-secret-min-32-chars-long"
+      JWT_EXPIRES_IN: "24h"
+      BCRYPT_SALT_ROUNDS: 10
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "npx prisma migrate deploy && node dist/server.js"
+    networks:
+      - taskflow-network
+
+# ==============================================================================
+# Persistent Volumes & Network Definitions
+# ==============================================================================
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  taskflow-network:
+    driver: bridge
